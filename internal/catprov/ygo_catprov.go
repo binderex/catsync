@@ -22,6 +22,7 @@ import (
 	"github.com/gocolly/colly/v2"
 )
 
+// YGOCatProv retrieves Yu-Gi-Oh! catalog data from YGOPRODeck and Yugipedia.
 type YGOCatProv struct {
 	ygoproBaseURL    string
 	yugipediaBaseURL string
@@ -29,6 +30,8 @@ type YGOCatProv struct {
 	client           *http.Client
 }
 
+// NewYGOCatProv creates a provider using the public YGOPRODeck and Yugipedia
+// endpoints.
 func NewYGOCatProv() *YGOCatProv {
 	return &YGOCatProv{
 		ygoproBaseURL:    "https://db.ygoprodeck.com/api/v7",
@@ -38,13 +41,16 @@ func NewYGOCatProv() *YGOCatProv {
 	}
 }
 
-// isReleased reports whether date is a valid YYYY-MM-DD date that is not
-// later than 10 hours from now.
+// isReleased reports whether date is a valid YYYY-MM-DD date that is not later
+// than max.
 func isReleased(date string, max time.Time) bool {
 	t, err := time.Parse("2006-01-02", date)
 	return err == nil && !t.After(max)
 }
 
+// GetCards returns the released cards matching name from YGOPRODeck. An empty
+// name fetches the whole card catalog. Skill cards and cards released after max
+// are skipped.
 func (prov YGOCatProv) GetCards(name string, max time.Time) ([]catalog.CatalogItem, error) {
 	var reqURL string
 	if name != "" {
@@ -152,6 +158,9 @@ func (prov YGOCatProv) GetCards(name string, max time.Time) ([]catalog.CatalogIt
 	return items, nil
 }
 
+// GetCardPrints returns every print of card. It locates the Yugipedia card page
+// using the card name and external ID as candidates, then visits the linked
+// Card_Gallery page and merges gallery metadata into the prints.
 func (prov YGOCatProv) GetCardPrints(card catalog.CatalogItem) ([]catalog.CatalogItem, error) {
 	candidates := []string{
 		card.Name,
@@ -261,6 +270,9 @@ func (prov YGOCatProv) GetCardPrints(card catalog.CatalogItem) ([]catalog.Catalo
 	return mergeGalleryIntoPrints(prints, galleryItems), nil
 }
 
+// GetSets fetches every set referenced by English cards and returns the set
+// variants together with the cards whose regional code or language has already
+// been released.
 func (prov YGOCatProv) GetSets(cards []catalog.CatalogItem) ([]catalog.CatalogItem, error) {
 	setNames := make(map[string]struct{}, len(cards))
 	for _, card := range cards {

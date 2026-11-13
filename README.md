@@ -15,7 +15,7 @@ persists that data in PostgreSQL.
 ## Providers
 
 | Provider | Status | Data sources |
-|---|---|---|
+| --- | --- | --- |
 | Yu-Gi-Oh! | Implemented | YGOPRODeck + Yugipedia |
 | Pokémon | Planned | TBD |
 

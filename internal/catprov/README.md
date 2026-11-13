@@ -12,10 +12,10 @@ planned as a future provider.
 ## Files
 
 | File | Responsibility |
-|---|---|
-| `catprov.go` | `CatalogProvider` interface, package errors, retry constants and browser User-Agent. |
-| `ygo_catprov.go` | YGO provider: `GetCards`, `GetCardPrints`, `GetSets`, Yugipedia collector, retries and rate limiting. |
-| `ygo_catprov_mapper.go` | HTML mappers: prints, gallery boxes, sets, images, dates and guaranteed copies. |
+| --- | --- |
+| `catprov.go` | Interface, errors, retry constants and User-Agent. |
+| `ygo_catprov.go` | Provider entry points, Yugipedia spider and retries. |
+| `ygo_catprov_mapper.go` | HTML-to-`CatalogItem` mappers. |
 | `ygo_catprov_test.go` | Integration tests against YGOPRODeck and Yugipedia. |
 
 ---
@@ -24,9 +24,9 @@ planned as a future provider.
 
 ```go
 type CatalogProvider interface {
-	GetCards(name string, max time.Time) ([]catalog.CatalogItem, error)
-	GetCardPrints(card catalog.CatalogItem) ([]catalog.CatalogItem, error)
-	GetSets(cards []catalog.CatalogItem) ([]catalog.CatalogItem, error)
+ GetCards(name string, max time.Time) ([]catalog.CatalogItem, error)
+ GetCardPrints(card catalog.CatalogItem) ([]catalog.CatalogItem, error)
+ GetSets(cards []catalog.CatalogItem) ([]catalog.CatalogItem, error)
 }
 ```
 
@@ -39,10 +39,10 @@ passes `time.Now().Add(24 * time.Hour)`.
 
 ```go
 type YGOCatProv struct {
-	ygoproBaseURL    string
-	yugipediaBaseURL string
-	now              time.Time
-	client           *http.Client
+ ygoproBaseURL    string
+ yugipediaBaseURL string
+ now              time.Time
+ client           *http.Client
 }
 ```
 
@@ -281,7 +281,7 @@ Configuration:
 `visitYugipediaPage` applies this policy:
 
 | Case | Wait | Attempts |
-|---|---|---|
+| --- | --- | --- |
 | `429 Too Many Requests` | `Retry-After` or 5s → 10s → 20s | 4 |
 | `401/403` (blocked) | `Retry-After` or 30s → 60s → 120s | 3 |
 | `5xx`, timeout or network error | 2s → 4s → 8s | 3 |
