@@ -2,80 +2,73 @@ package catalog
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
-// catalogIdentityColumns are the columns that make up the composite unique
-// index idx_catalog_identity. They are the conflict target for upserts.
-var catalogIdentityColumns = []clause.Column{
-	{Name: "external_id"},
-	{Name: "brand"},
-	{Name: "type"},
-	{Name: "lang"},
-	{Name: "code"},
-	{Name: "rarity"},
-	{Name: "edition"},
-	{Name: "extended_artwork"},
-	{Name: "set_name"},
+const upsertBatchSize = 250
+
+var (
+	// ErrItemInfoFilterRequired is returned when GetItemInfo is called without
+	// source, brand or kind.
+	ErrItemInfoFilterRequired = errors.New("item info lookup requires at least one filter")
+	// ErrItemInfoSourceRequired is returned when an item info without source is
+	// sent to the upsert.
+	ErrItemInfoSourceRequired = errors.New("item info source is required")
+)
+
+// itemInfoConflictColumns matches idx_item_infos_source. Source is unique, so
+// conflicting on it also satisfies idx_item_infos_identity.
+var itemInfoConflictColumns = []clause.Column{
+	{Name: "source"},
 }
 
-// catalogMutableColumns are the columns updated when a row already exists.
-// The identity columns, the primary key and created_at are intentionally
-// excluded.
-var catalogMutableColumns = []string{
-	"name",
-	"description",
-	"archetype",
-	"card_info",
-	"card_images",
-	"serial_code",
-	"rarity_code",
-	"guaranteed_copies",
-	"print_image",
+// itemInfoMutableColumns are updated when the source already exists.
+var itemInfoMutableColumns = []string{
+	"images",
+	"verified_source",
 	"set_type",
 	"set_code",
-	"set_regional_code",
-	"quantity_per_set",
-	"quantity_per_box",
-	"set_image",
-	"set_box_image",
-	"released_at",
+	"archetype",
+	"card_types",
+	"properties",
 	"updated_at",
 }
 
-// catalogIdentity is the set of fields that identify a catalog item. It
-// mirrors idx_catalog_identity and is used to detect duplicates in memory.
-type catalogIdentity struct {
-	ExternalID      string
-	Brand           Brand
-	Type            CatalogType
-	Lang            Lang
-	Code            string
-	Rarity          string
-	Edition         string
-	ExtendedArtwork bool
-	SetName         string
+// itemConflictColumns matches idx_items_identity. It is the conflict target for
+// CardPrinted, Set and plain Item rows.
+var itemConflictColumns = []clause.Column{
+	{Name: "kind"},
+	{Name: "brand"},
+	{Name: "lang"},
+	{Name: "code"},
+	{Name: "item_info_id"},
+	{Name: "rarity"},
+	{Name: "edition"},
+	{Name: "extended_art"},
+	{Name: "set_id"},
 }
 
-// identity returns the composite key of the item.
-func (i CatalogItem) identity() catalogIdentity {
-	return catalogIdentity{
-		ExternalID:      i.ExternalID,
-		Brand:           i.Brand,
-		Type:            i.Type,
-		Lang:            i.Lang,
-		Code:            i.Code,
-		Rarity:          i.Rarity,
-		Edition:         i.Edition,
-		ExtendedArtwork: i.ExtendedArtwork,
-		SetName:         i.SetName,
-	}
+// itemMutableColumns are updated when the item identity already exists.
+var itemMutableColumns = []string{
+	"name",
+	"description",
+	"image",
+	"release_at",
+	"serial_code",
+	"rarity_code",
+	"guaranteed_copies",
+	"regional_code",
+	"quantity_cards_per_pack",
+	"quantity_packs_per_set",
+	"updated_at",
 }
 
-// Repository persists catalog items.
+// Repository persists catalog items and item infos.
 type Repository struct {
 	db *gorm.DB
 }
@@ -85,43 +78,199 @@ func NewRepository(db *gorm.DB) *Repository {
 	return &Repository{db: db}
 }
 
-// GetByName returns every catalog item whose name matches exactly.
-func (r *Repository) GetByName(ctx context.Context, name string) ([]CatalogItem, error) {
-	var items []CatalogItem
+// GetItemInfo returns the first item info matching the provided non-empty
+// filters. At least one filter must be provided.
+func (r *Repository) GetItemInfo(ctx context.Context, source string, brand Brand, kind Kind) (*ItemInfo, error) {
+	query := r.db.WithContext(ctx).Model(&ItemInfo{})
+	hasFilter := false
 
-	err := r.db.WithContext(ctx).
-		Where("name = ?", name).
-		Order("id").
-		Find(&items).Error
-	if err != nil {
-		return nil, fmt.Errorf("get catalog items by name %q: %w", name, err)
+	if source != "" {
+		query = query.Where("source = ?", source)
+		hasFilter = true
+	}
+	if brand != "" {
+		query = query.Where("brand = ?", brand)
+		hasFilter = true
+	}
+	if kind != "" {
+		query = query.Where("kind = ?", kind)
+		hasFilter = true
 	}
 
-	return items, nil
+	if !hasFilter {
+		return nil, ErrItemInfoFilterRequired
+	}
+
+	var info ItemInfo
+	if err := query.First(&info).Error; err != nil {
+		return nil, fmt.Errorf("get item info: %w", err)
+	}
+
+	return &info, nil
 }
 
-// UpsertBatch inserts items that do not exist yet and updates the mutable
-// fields of the ones that already exist, using idx_catalog_identity as the
-// conflict target.
-//
-// The batch must not contain two items with the same identity: PostgreSQL
-// rejects an ON CONFLICT statement that affects the same row twice. The
-// service layer is responsible for removing those duplicates and for keeping
-// the batch small enough.
-func (r *Repository) UpsertBatch(ctx context.Context, items []CatalogItem) error {
-	if len(items) == 0 {
+// UpsertItemInfo inserts or updates one item info by source.
+func (r *Repository) UpsertItemInfo(ctx context.Context, info *ItemInfo) error {
+	if info == nil {
 		return nil
+	}
+	if info.Source == "" {
+		return ErrItemInfoSourceRequired
 	}
 
 	err := r.db.WithContext(ctx).
 		Clauses(clause.OnConflict{
-			Columns:   catalogIdentityColumns,
-			DoUpdates: clause.AssignmentColumns(catalogMutableColumns),
+			Columns:   itemInfoConflictColumns,
+			DoUpdates: clause.AssignmentColumns(itemInfoMutableColumns),
 		}).
-		Create(&items).Error
+		Create(info).Error
 	if err != nil {
-		return fmt.Errorf("upsert catalog items: %w", err)
+		return fmt.Errorf("upsert item info: %w", err)
 	}
 
 	return nil
+}
+
+// UpsertItemInfos inserts or updates a batch of item infos by source.
+func (r *Repository) UpsertItemInfos(ctx context.Context, infos []ItemInfo) error {
+	if len(infos) == 0 {
+		return nil
+	}
+
+	for _, info := range infos {
+		if info.Source == "" {
+			return ErrItemInfoSourceRequired
+		}
+	}
+
+	infos = dedupeItemInfos(infos)
+
+	err := r.db.WithContext(ctx).
+		Clauses(clause.OnConflict{
+			Columns:   itemInfoConflictColumns,
+			DoUpdates: clause.AssignmentColumns(itemInfoMutableColumns),
+		}).
+		CreateInBatches(&infos, upsertBatchSize).Error
+	if err != nil {
+		return fmt.Errorf("upsert item infos: %w", err)
+	}
+
+	return nil
+}
+
+// UpsertItems inserts or updates plain Item rows, such as accessories.
+func (r *Repository) UpsertItems(ctx context.Context, items []Item) error {
+	return upsertItemRows(r.db.WithContext(ctx), items)
+}
+
+// UpsertCardPrinted inserts or updates card print rows.
+func (r *Repository) UpsertCardPrinted(ctx context.Context, prints []CardPrinted) error {
+	return upsertItemRows(r.db.WithContext(ctx), prints)
+}
+
+// UpsertSets inserts or updates set rows. The CardsPrinted association is not
+// persisted here.
+func (r *Repository) UpsertSets(ctx context.Context, sets []Set) error {
+	return upsertItemRows(r.db.WithContext(ctx), sets)
+}
+
+func upsertItemRows[T itemIdentityer](db *gorm.DB, rows []T) error {
+	rows = dedupeItemRows(rows)
+	if len(rows) == 0 {
+		return nil
+	}
+
+	err := db.
+		Omit(clause.Associations).
+		Clauses(clause.OnConflict{
+			Columns:   itemConflictColumns,
+			DoUpdates: clause.AssignmentColumns(itemMutableColumns),
+		}).
+		CreateInBatches(&rows, upsertBatchSize).Error
+	if err != nil {
+		return fmt.Errorf("upsert items: %w", err)
+	}
+
+	return nil
+}
+
+type itemIdentity struct {
+	Kind        Kind
+	Brand       Brand
+	Lang        Lang
+	Code        string
+	ItemInfoID  string
+	Rarity      string
+	Edition     string
+	ExtendedArt bool
+	SetID       string
+}
+
+type itemIdentityer interface {
+	itemIdentity() itemIdentity
+}
+
+func (i Item) itemIdentity() itemIdentity {
+	return itemIdentity{
+		Kind:       i.Kind,
+		Brand:      i.Brand,
+		Lang:       i.Lang,
+		Code:       i.Code,
+		ItemInfoID: uuidString(i.ItemInfoID),
+	}
+}
+
+func (c CardPrinted) itemIdentity() itemIdentity {
+	identity := c.Item.itemIdentity()
+	identity.Rarity = c.Rarity
+	identity.Edition = c.Edition
+	identity.ExtendedArt = c.ExtendedArt
+	identity.SetID = uuidString(c.SetID)
+	return identity
+}
+
+func (s Set) itemIdentity() itemIdentity {
+	return s.Item.itemIdentity()
+}
+
+func uuidString(id *uuid.UUID) string {
+	if id == nil {
+		return ""
+	}
+	return id.String()
+}
+
+func dedupeItemRows[T itemIdentityer](rows []T) []T {
+	positions := make(map[itemIdentity]int, len(rows))
+	unique := make([]T, 0, len(rows))
+
+	for _, row := range rows {
+		identity := row.itemIdentity()
+		if position, ok := positions[identity]; ok {
+			unique[position] = row
+			continue
+		}
+
+		positions[identity] = len(unique)
+		unique = append(unique, row)
+	}
+
+	return unique
+}
+
+func dedupeItemInfos(infos []ItemInfo) []ItemInfo {
+	positions := make(map[string]int, len(infos))
+	unique := make([]ItemInfo, 0, len(infos))
+
+	for _, info := range infos {
+		if position, ok := positions[info.Source]; ok {
+			unique[position] = info
+			continue
+		}
+
+		positions[info.Source] = len(unique)
+		unique = append(unique, info)
+	}
+
+	return unique
 }
