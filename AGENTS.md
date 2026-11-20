@@ -18,53 +18,49 @@ catalog model, and persists it in PostgreSQL.
 
 The repository is **mid-refactor**. The new catalog model (`catalog.Item`,
 `catalog.CardPrinted`, `catalog.Set`, `catalog.ItemInfo`) and the new retrier
-package already exist, but older packages still reference the removed
-`catalog.CatalogItem`.
-
-As a result:
-
-- `go build ./...` may fail because of legacy `internal/catprov` and
-  `internal/sync` code.
-- Build and test only the packages or commands you touch.
-- The working Dragon Shield path is `cmd/sync/dragonshield` plus
-  `internal/catprov/dragonshield`.
-- `cmd/ygosync` and the legacy `internal/sync` path are not part of the current
-  Dragon Shield work.
-
-Do not "fix" the whole repository by deleting legacy code unless the user asks
-for it.
+package exist. The legacy catalog provider files were removed; the active
+providers are Dragon Shield and Yu-Gi-Oh!.
 
 ## Layout
 
 | Path | Responsibility |
 | --- | --- |
 | `cmd/sync/dragonshield` | Scrapes Dragon Shield sleeves and upserts them. |
+| `cmd/sync/ygo` | Scrapes Yu-Gi-Oh! releases, resumes from a checkpoint and upserts sets/prints. |
 | `internal/catprov/dragonshield` | Dragon Shield provider and HTML parsing. |
+| `internal/catprov/ygo` | Yu-Gi-Oh! provider, release checkpoint, card and set scrapers. |
 | `internal/retrier` | Generic retry queue with HTTP, Colly and Chromedp transports. |
 | `internal/catalog` | Catalog model, identity rules, repository and service. |
 | `internal/database` | PostgreSQL connection and migrations. |
-| `internal/sync` | Legacy synchronization coordinator; not used by the Dragon Shield command. |
-| `cmd/ygosync` | Legacy Yu-Gi-Oh! command; currently outside the refactor. |
 
 Provider docs:
 
 - [`internal/catprov/dragonshield/README.md`](internal/catprov/dragonshield/README.md)
+- [`internal/catprov/ygo/README.md`](internal/catprov/ygo/README.md)
 - [`internal/retrier/README.md`](internal/retrier/README.md)
 
 ## Commands
 
-Regular validation for the Dragon Shield path:
+Regular validation:
 
 ```powershell
-go test ./internal/retrier ./internal/catprov/dragonshield ./cmd/sync/dragonshield
-go vet ./internal/retrier ./internal/catprov/dragonshield ./cmd/sync/dragonshield
+go test ./internal/retrier ./internal/catprov/dragonshield ./internal/catprov/ygo ./cmd/sync/dragonshield ./cmd/sync/ygo
+go vet ./internal/retrier ./internal/catprov/dragonshield ./internal/catprov/ygo ./cmd/sync/dragonshield ./cmd/sync/ygo
 ```
 
-Run the synchronization:
+Run the synchronizations:
 
 ```powershell
 go run ./cmd/sync/dragonshield
+go run ./cmd/sync/ygo                 # GetNewReleases (default)
+go run ./cmd/sync/ygo -mode all       # GetAllReleases, fresh crawl
+go run ./cmd/sync/ygo -mode all -resume
 ```
+
+`-mode all` starts a fresh crawl and overwrites `ygo-releases-state.json`;
+`-mode all -resume` continues from that checkpoint. The default mode is
+`new` (`GetNewReleases`) and does not use a checkpoint. Every crawl writes
+`ygo-crawl-report.json` with counts, set/print totals and the failed URLs.
 
 `DB_URL` must be set in the environment or in `.env`.
 
