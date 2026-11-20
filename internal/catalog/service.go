@@ -25,6 +25,12 @@ func (s *Service) GetItemInfo(ctx context.Context, source string, brand Brand, k
 	return s.repo.GetItemInfo(ctx, source, brand, kind)
 }
 
+// GetItemInfosByBrand returns every item info for brand. An empty brand
+// returns all item infos.
+func (s *Service) GetItemInfosByBrand(ctx context.Context, brand Brand) ([]ItemInfo, error) {
+	return s.repo.GetItemInfosByBrand(ctx, brand)
+}
+
 // UpsertItemInfo inserts or updates one item info by source.
 func (s *Service) UpsertItemInfo(ctx context.Context, info *ItemInfo) error {
 	batchCtx, cancel := context.WithTimeout(ctx, upsertBatchTimeout)
@@ -63,4 +69,12 @@ func (s *Service) UpsertSets(ctx context.Context, sets []Set) error {
 	defer cancel()
 
 	return s.repo.UpsertSets(batchCtx, sets)
+}
+
+// UpsertSetWithPrints inserts or updates a set and its card prints atomically.
+func (s *Service) UpsertSetWithPrints(ctx context.Context, set *Set, prints []CardPrinted) error {
+	batchCtx, cancel := context.WithTimeout(ctx, upsertBatchTimeout)
+	defer cancel()
+
+	return s.repo.UpsertSetWithPrints(batchCtx, set, prints)
 }

@@ -8,8 +8,8 @@ The catalog uses two tables:
 
 | Table | Go type | Purpose |
 | --- | --- | --- |
-| `item_infos` | `ItemInfo` | Shared, language-independent information for cards, sets and optional products. |
-| `items` | `Item`, `CardPrinted`, `Set` | Concrete catalog rows. `CardPrinted` and `Set` embed `Item` and share this table. |
+| `item_infos` | `ItemInfo` | Shared card/set information. |
+| `items` | `Item`, `CardPrinted`, `Set` | Concrete rows; shared table. |
 
 ```text
 item_infos 1 ─── N items
@@ -21,6 +21,16 @@ item_infos 1 ─── N items
 Set 1 ─── N CardPrinted
         items.set_id = items.id (kind = SET)
 ```
+
+`Item` also exposes an optional `ItemInfo` association backed by
+
+```go
+ItemInfo *ItemInfo `gorm:"foreignKey:ItemInfoID;references:ID"`
+```
+
+It is a read/preload helper for scrapers and tests; the persisted column is
+still `ItemInfoID`. `UpsertItems`, `UpsertCardPrinted` and `UpsertSets` omit
+associations, so an attached `ItemInfo` does not write a second row.
 
 `ItemInfoID` and `SetID` are optional:
 
@@ -71,12 +81,14 @@ IDs are `uuid.UUID` from `github.com/google/uuid`.
 
 | Method | Purpose |
 | --- | --- |
-| `GetItemInfo(ctx, source, brand, kind)` | Returns the first item info matching the non-empty filters. |
-| `UpsertItemInfo(ctx, info)` | Inserts or updates one item info by `source`. |
+| `GetItemInfo(ctx, source, brand, kind)` | First item info matching filters. |
+| `GetItemInfosByBrand(ctx, brand)` | All item infos for one brand. |
+| `UpsertItemInfo(ctx, info)` | Upserts one item info by `source`. |
 | `UpsertItemInfos(ctx, infos)` | Batch version of `UpsertItemInfo`. |
-| `UpsertItems(ctx, items)` | Inserts or updates plain `Item` rows, such as playmats and sleeves. |
-| `UpsertCardPrinted(ctx, prints)` | Inserts or updates card print rows. |
-| `UpsertSets(ctx, sets)` | Inserts or updates set rows. The `CardsPrinted` association is not persisted. |
+| `UpsertItems(ctx, items)` | Upserts playmats and sleeves. |
+| `UpsertCardPrinted(ctx, prints)` | Upserts card print rows. |
+| `UpsertSets(ctx, sets)` | Upserts sets; prints are not persisted. |
+| `UpsertSetWithPrints(ctx, set, prints)` | Upserts a set and its prints. |
 
 `GetItemInfo` applies only the filters that are not empty:
 
@@ -93,12 +105,41 @@ matches, the returned error wraps `gorm.ErrRecordNotFound`.
 `Service` wraps the repository and applies a timeout to upserts:
 
 ```go
-func (s *Service) GetItemInfo(ctx context.Context, source string, brand Brand, kind Kind) (*ItemInfo, error)
-func (s *Service) UpsertItemInfo(ctx context.Context, info *ItemInfo) error
-func (s *Service) UpsertItemInfos(ctx context.Context, infos []ItemInfo) error
-func (s *Service) UpsertItems(ctx context.Context, items []Item) error
-func (s *Service) UpsertCardPrinted(ctx context.Context, prints []CardPrinted) error
-func (s *Service) UpsertSets(ctx context.Context, sets []Set) error
+func (s *Service) GetItemInfo(
+    ctx context.Context,
+    source string,
+    brand Brand,
+    kind Kind,
+) (*ItemInfo, error)
+func (s *Service) GetItemInfosByBrand(
+    ctx context.Context,
+    brand Brand,
+) ([]ItemInfo, error)
+func (s *Service) UpsertItemInfo(
+    ctx context.Context,
+    info *ItemInfo,
+) error
+func (s *Service) UpsertItemInfos(
+    ctx context.Context,
+    infos []ItemInfo,
+) error
+func (s *Service) UpsertItems(
+    ctx context.Context,
+    items []Item,
+) error
+func (s *Service) UpsertCardPrinted(
+    ctx context.Context,
+    prints []CardPrinted,
+) error
+func (s *Service) UpsertSets(
+    ctx context.Context,
+    sets []Set,
+) error
+func (s *Service) UpsertSetWithPrints(
+    ctx context.Context,
+    set *Set,
+    prints []CardPrinted,
+) error
 ```
 
 ## Playmats and sleeves
@@ -138,7 +179,7 @@ these constructors. Card prints and sets use the regular `NewItem` constructor.
 
 ## Upsert behavior
 
-### `item_infos`
+### `item_infos` upsert
 
 Conflict target: `source`.
 
@@ -152,7 +193,7 @@ properties, updated_at
 `kind`, `brand` and `source` are identity columns and are not updated on
 conflict. A missing `source` returns `ErrItemInfoSourceRequired`.
 
-### `items`
+### `items` upsert
 
 Conflict target:
 
@@ -201,6 +242,31 @@ err := db.
 If a playmat or sleeve belongs to a set and sets `SetID`, it would also match
 `set_id = set.ID`. The `kind = CARD` filter is what keeps `CardsPrinted`
 semantically correct.
+
+## Upserting a set with its prints
+
+`UpsertSetWithPrints` writes the set first and then its prints inside the same
+transaction:
+
+```go
+if err := service.UpsertSetWithPrints(ctx, set, prints); err != nil {
+    return err
+}
+```
+
+The method:
+
+- assigns the set kind to `KindSet`;
+- generates an ID if the set has none;
+- resolves the persisted set ID when the identity already exists, so the prints
+  always reference the existing set row;
+- assigns `SetID = set.ID` to every print;
+- assigns `kind = KindCard` to every print;
+- upserts the set and prints atomically.
+
+It does **not** delete prints that are no longer present. If a set loses prints,
+add a reconciliation step that deletes the missing rows before or after the
+upsert, within the same transaction.
 
 ## Example
 
@@ -261,7 +327,11 @@ print := catalog.NewCardPrinted(
     false,
     0,
 )
-if err := service.UpsertCardPrinted(ctx, []catalog.CardPrinted{*print}); err != nil {
+err := service.UpsertCardPrinted(
+    ctx,
+    []catalog.CardPrinted{*print},
+)
+if err != nil {
     return err
 }
 ```

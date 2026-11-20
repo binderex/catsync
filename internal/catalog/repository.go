@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-const upsertBatchSize = 250
+const upsertBatchSize = 50
 
 var (
 	// ErrItemInfoFilterRequired is returned when GetItemInfo is called without
@@ -80,6 +80,22 @@ type Repository struct {
 // NewRepository creates a catalog repository backed by db.
 func NewRepository(db *gorm.DB) *Repository {
 	return &Repository{db: db}
+}
+
+// GetItemInfosByBrand returns every item info for brand. An empty brand
+// returns the whole item_infos table.
+func (r *Repository) GetItemInfosByBrand(ctx context.Context, brand Brand) ([]ItemInfo, error) {
+	query := r.db.WithContext(ctx).Model(&ItemInfo{})
+	if brand != "" {
+		query = query.Where("brand = ?", brand)
+	}
+
+	var infos []ItemInfo
+	if err := query.Find(&infos).Error; err != nil {
+		return nil, fmt.Errorf("get item infos by brand: %w", err)
+	}
+
+	return infos, nil
 }
 
 // GetItemInfo returns the first item info matching the provided non-empty
@@ -176,6 +192,83 @@ func (r *Repository) UpsertCardPrinted(ctx context.Context, prints []CardPrinted
 // persisted here.
 func (r *Repository) UpsertSets(ctx context.Context, sets []Set) error {
 	return upsertItemRows(r.db.WithContext(ctx), sets)
+}
+
+// UpsertSetWithPrints inserts or updates a set and its card prints in one
+// transaction. The prints are attached to set.ID, overwriting any different
+// SetID they had. Prints that are no longer present are not deleted.
+func (r *Repository) UpsertSetWithPrints(ctx context.Context, set *Set, prints []CardPrinted) error {
+	if set == nil {
+		return nil
+	}
+	if set.ID == uuid.Nil {
+		set.ID = uuid.New()
+	}
+	set.Kind = KindSet
+
+	rows := make([]CardPrinted, len(prints))
+	copy(rows, prints)
+	for i := range rows {
+		rows[i].Kind = KindCard
+	}
+
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		repo := NewRepository(tx)
+
+		if err := repo.UpsertSets(ctx, []Set{*set}); err != nil {
+			return err
+		}
+
+		// The upsert preserves the existing row ID on conflict. Resolve it
+		// before attaching the prints so they never point to a discarded ID.
+		persistedID, err := repo.findSetID(ctx, *set)
+		if err != nil {
+			return err
+		}
+		set.ID = persistedID
+		for i := range rows {
+			rows[i].SetID = &set.ID
+		}
+
+		return repo.UpsertCardPrinted(ctx, rows)
+	})
+	if err != nil {
+		return fmt.Errorf("upsert set with prints: %w", err)
+	}
+
+	return nil
+}
+
+func (r *Repository) findSetID(ctx context.Context, set Set) (uuid.UUID, error) {
+	query := r.db.WithContext(ctx).
+		Model(&Item{}).
+		Where(
+			"kind = ? AND brand = ? AND lang = ? AND code = ? AND rarity = '' AND edition = '' AND extended_art = false AND set_id IS NULL",
+			KindSet,
+			set.Brand,
+			set.Lang,
+			set.Code,
+		)
+
+	if set.ItemInfoID != nil {
+		query = query.Where("item_info_id = ?", *set.ItemInfoID)
+	} else {
+		query = query.Where("item_info_id IS NULL")
+	}
+
+	var candidates []Item
+	if err := query.Find(&candidates).Error; err != nil {
+		return uuid.Nil, fmt.Errorf("find persisted set: %w", err)
+	}
+
+	wantSubtypes := subtypesKey(set.Subtypes)
+	for _, candidate := range candidates {
+		if subtypesKey(candidate.Subtypes) == wantSubtypes {
+			return candidate.ID, nil
+		}
+	}
+
+	return uuid.Nil, fmt.Errorf("find persisted set id: %w", gorm.ErrRecordNotFound)
 }
 
 func upsertItemRows[T itemIdentityer](db *gorm.DB, rows []T) error {

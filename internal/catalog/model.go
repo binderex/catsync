@@ -14,6 +14,7 @@ import (
 type Item struct {
 	ID          uuid.UUID      `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
 	ItemInfoID  *uuid.UUID     `json:"item_info_id,omitempty" gorm:"type:uuid;index:idx_items_item_info_id"`
+	ItemInfo    *ItemInfo      `json:"item_info,omitempty" gorm:"foreignKey:ItemInfoID;references:ID"`
 	Kind        Kind           `json:"kind" gorm:"type:text;not null;index:idx_items_kind"`
 	Subtypes    map[string]any `json:"subtypes,omitempty" gorm:"type:jsonb;serializer:json"`
 	Brand       Brand          `json:"brand" gorm:"type:text;not null;index:idx_items_brand"`
