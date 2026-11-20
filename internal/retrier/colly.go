@@ -3,6 +3,7 @@ package retrier
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/gocolly/colly/v2"
 )
@@ -43,8 +44,21 @@ func (c *Colly) Add(url string, filter Filter) {
 }
 
 // Run visits every pending URL until all of them reach a terminal state.
-func (c *Colly) Run(ctx context.Context) error {
+func (c *Colly) Run(ctx context.Context) (err error) {
+	started := time.Now().UTC()
+	defer func() {
+		err = c.finishRun(started, ctx, err)
+	}()
+
 	return c.run(ctx, c.fetch)
+}
+
+// Continue loads a report and resumes its pending URLs.
+func (c *Colly) Continue(ctx context.Context, reportPath string, resolve FilterResolver) error {
+	if err := c.continueFromReport(reportPath, resolve); err != nil {
+		return err
+	}
+	return c.Run(ctx)
 }
 
 // States returns a snapshot of every tracked URL.

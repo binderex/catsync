@@ -10,24 +10,24 @@ import (
 // Progress is a snapshot of the retry queue counters.
 type Progress struct {
 	// Total is the number of tracked URLs, including URLs still pending.
-	Total int
+	Total int `json:"total"`
 	// Done is the number of URLs in a terminal state.
-	Done int
+	Done int `json:"done"`
 	// Pending is the number of URLs that still need more attempts.
-	Pending int
+	Pending int `json:"pending"`
 	// Completed is the number of successful URLs.
-	Completed int
+	Completed int `json:"completed"`
 	// NotFound is the number of URLs that returned HTTP 404.
-	NotFound int
+	NotFound int `json:"not_found"`
 	// Invalid is the number of URLs rejected by their filter.
-	Invalid int
+	Invalid int `json:"invalid"`
 	// Failed is the number of URLs that exhausted their retries.
-	Failed int
+	Failed int `json:"failed"`
 	// Current is the URL being attempted or the last URL attempted.
-	Current string
+	Current string `json:"current,omitempty"`
 	// CurrentAttempt is the attempt number for Current, or 0 when no URL has
 	// been attempted yet.
-	CurrentAttempt int
+	CurrentAttempt int `json:"current_attempt,omitempty"`
 }
 
 // progress returns a snapshot of the queue counters.

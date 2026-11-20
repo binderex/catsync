@@ -32,8 +32,21 @@ func (h *HTTP) Add(url string, filter Filter) {
 }
 
 // Run visits every pending URL until all of them reach a terminal state.
-func (h *HTTP) Run(ctx context.Context) error {
+func (h *HTTP) Run(ctx context.Context) (err error) {
+	started := time.Now().UTC()
+	defer func() {
+		err = h.finishRun(started, ctx, err)
+	}()
+
 	return h.run(ctx, h.fetch)
+}
+
+// Continue loads a report and resumes its pending URLs.
+func (h *HTTP) Continue(ctx context.Context, reportPath string, resolve FilterResolver) error {
+	if err := h.continueFromReport(reportPath, resolve); err != nil {
+		return err
+	}
+	return h.Run(ctx)
 }
 
 // States returns a snapshot of every tracked URL.

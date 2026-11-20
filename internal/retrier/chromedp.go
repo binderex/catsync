@@ -39,6 +39,8 @@ type chromedpConfig struct {
 	headless         bool
 	timeout          time.Duration
 	challengeTimeout time.Duration
+	provider         string
+	reportDir        string
 }
 
 // NewChromedp returns a browser-backed retrier. The browser is started on the
@@ -58,7 +60,10 @@ func NewChromedp(opts ...ChromedpOption) *Chromedp {
 	}
 
 	return &Chromedp{
-		base:             newBase(),
+		base: newBase(
+			WithProvider(cfg.provider),
+			WithReportDir(cfg.reportDir),
+		),
 		execPath:         cfg.execPath,
 		headless:         cfg.headless,
 		timeout:          cfg.timeout,
@@ -103,19 +108,46 @@ func WithChromedpChallengeTimeout(timeout time.Duration) ChromedpOption {
 	}
 }
 
+// WithChromedpProvider enables run reports for this retrier.
+func WithChromedpProvider(provider string) ChromedpOption {
+	return func(cfg *chromedpConfig) {
+		cfg.provider = provider
+	}
+}
+
+// WithChromedpReportDir changes the run report directory.
+func WithChromedpReportDir(directory string) ChromedpOption {
+	return func(cfg *chromedpConfig) {
+		cfg.reportDir = directory
+	}
+}
+
 // Add queues a URL with its optional filter.
 func (c *Chromedp) Add(url string, filter Filter) {
 	c.add(url, filter)
 }
 
 // Run starts the browser, visits every pending URL and closes the browser.
-func (c *Chromedp) Run(ctx context.Context) error {
+func (c *Chromedp) Run(ctx context.Context) (err error) {
+	started := time.Now().UTC()
+	defer func() {
+		err = c.finishRun(started, ctx, err)
+	}()
+
 	if err := c.start(ctx); err != nil {
 		return err
 	}
 	defer c.stop()
 
 	return c.run(ctx, c.fetch)
+}
+
+// Continue loads a report and resumes its pending URLs.
+func (c *Chromedp) Continue(ctx context.Context, reportPath string, resolve FilterResolver) error {
+	if err := c.continueFromReport(reportPath, resolve); err != nil {
+		return err
+	}
+	return c.Run(ctx)
 }
 
 // States returns a snapshot of every tracked URL.

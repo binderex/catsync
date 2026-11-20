@@ -4,9 +4,9 @@ Generic, dynamic URL retry queue with three transports:
 
 | Transport | Type | Use case |
 | --- | --- | --- |
-| `HTTP` | `*retrier.HTTP` | Plain HTTP requests, JSON APIs and pages without JavaScript challenges. |
-| `Colly` | `*retrier.Colly` | Sites that need Colly callbacks (`OnHTML`, `OnResponse`, etc.). |
-| `Chromedp` | `*retrier.Chromedp` | Sites protected by JavaScript challenges (Cloudflare) that require a real browser. |
+| `HTTP` | `*retrier.HTTP` | Plain HTTP and JSON APIs. |
+| `Colly` | `*retrier.Colly` | Colly callbacks and HTML scraping. |
+| `Chromedp` | `*retrier.Chromedp` | Real browser for JS challenges. |
 
 All transports share the same queue, retry policy, filters, state tracking and
 console progress.
@@ -41,11 +41,72 @@ are marked as failed but do not make `Run` return an error. Inspect `States()` o
 type Retrier interface {
     Add(url string, filter Filter)
     Run(ctx context.Context) error
+    Continue(ctx context.Context, reportPath string, resolve FilterResolver) error
     States() map[string]URLState
     State(url string) (URLState, bool)
     Progress() Progress
+    LastReport() string
 }
 ```
+
+## Run reports
+
+Enable reports with `WithProvider`:
+
+```go
+client := retrier.NewHTTP(
+    nil,
+    retrier.WithProvider("ygo"),
+    retrier.WithReportDir("reports"), // optional
+)
+```
+
+Every `Run` writes:
+
+```text
+reports/<provider>_<state>_<UTC timestamp>.json
+```
+
+States:
+
+- `success`: `Run` finished without an error.
+- `cancelled`: the context was cancelled.
+- `failed`: any other error, including a deadline.
+
+The report contains `Progress`, `Order`, every `URLState` and the failed,
+not-found and invalid URLs. `LastReport()` returns the path of the last report.
+
+To write a report even when the browser cannot start, `Chromedp` registers the
+report after `Run` starts; use `WithChromedpProvider("dragonshield")` to enable
+it for the browser transport. `WithChromedpReportDir` changes its directory.
+
+## Continue from a report
+
+```go
+err := client.Continue(
+    ctx,
+    "reports/ygo_cancelled_20261120T145510Z.json",
+    func(state retrier.URLState) retrier.Filter {
+        switch {
+        case strings.Contains(state.URL, "/wiki/Card_Gallery:"):
+            return galleryFilter
+        case strings.Contains(state.URL, "/wiki/Set_Card_Lists:"):
+            return setFilter
+        default:
+            return cardFilter
+        }
+    },
+)
+```
+
+`Continue` restores the queue order and states, skips terminal URLs and calls
+`resolve` only for non-terminal URLs. Filters are functions and cannot be
+serialized, so the caller must return them here. If `resolve` returns `nil`, the
+URL is resumed without a filter.
+
+`Continue` returns `ErrQueueNotEmpty` when the retrier already has queued URLs.
+It does not reconstruct provider-specific in-memory data; callers that keep
+extracted data, such as the YGO checkpoint, must restore that data separately.
 
 ## URLs and filters
 
@@ -173,10 +234,13 @@ can repeat URLs and inspect error responses.
 
 ```go
 browser := retrier.NewChromedp()
-browser.Add("https://www.dragonshield.com/collections/card-sleeves", func(response retrier.Response) bool {
-    // response.Body is the rendered HTML
-    return false
-})
+browser.Add(
+    "https://www.dragonshield.com/collections/card-sleeves",
+    func(response retrier.Response) bool {
+        // response.Body is the rendered HTML
+        return false
+    },
+)
 
 if err := browser.Run(ctx); err != nil {
     return err
@@ -227,7 +291,9 @@ Live browser test, opt-in:
 
 ```powershell
 $env:DRAGONSHIELD_LIVE="1"
-go test ./internal/retrier -run TestChromedpNavigatesDragonShield -v -count=1 -timeout 5m
+go test ./internal/retrier `
+  -run TestChromedpNavigatesDragonShield -v `
+  -count=1 -timeout 5m
 ```
 
 The live test opens the detected browser and waits for the Dragon Shield

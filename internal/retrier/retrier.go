@@ -75,7 +75,7 @@ func (s URLState) Terminal() bool {
 	return s.Completed || s.NotFound || s.Invalid || s.Failed
 }
 
-// Retrier is implemented by the HTTP and Colly transports.
+// Retrier is implemented by the HTTP, Colly and Chromedp transports.
 type Retrier interface {
 	// Add queues a URL with its optional filter. It is safe to call while Run
 	// is executing; URLs already present are not queued again.
@@ -83,12 +83,23 @@ type Retrier interface {
 	// Run visits every pending URL until all of them reach a terminal state.
 	// Failed URLs do not produce an error: inspect States for details.
 	Run(ctx context.Context) error
+	// Continue loads a report and resumes its non-terminal URLs.
+	Continue(ctx context.Context, reportPath string, resolve FilterResolver) error
 	// States returns a snapshot of every tracked URL.
 	States() map[string]URLState
 	// State returns the state of a single URL.
 	State(url string) (URLState, bool)
 	// Progress returns a snapshot of the queue counters.
 	Progress() Progress
+	// LastReport returns the path of the last generated report, if any.
+	LastReport() string
+}
+
+// LastReport returns the path of the last generated report.
+func (b *base) LastReport() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.lastReport
 }
 
 type fetchResult struct {
@@ -101,11 +112,14 @@ type fetchResult struct {
 type fetchFunc func(ctx context.Context, url string) fetchResult
 
 type base struct {
-	mu      sync.Mutex
-	policy  Policy
-	current string
-	states  map[string]*URLState
-	order   []string
+	mu         sync.Mutex
+	policy     Policy
+	provider   string
+	reportDir  string
+	lastReport string
+	current    string
+	states     map[string]*URLState
+	order      []string
 }
 
 func (b *base) add(url string, filter Filter) {
