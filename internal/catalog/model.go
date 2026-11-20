@@ -9,20 +9,22 @@ import (
 
 // Item is the shared persisted part of a catalog entry. CardPrinted and Set
 // embed Item and share the items table. ItemInfoID is optional because external
-// products such as accessories may not have shared card/set information.
+// products such as playmats and sleeves may not have shared card/set
+// information.
 type Item struct {
-	ID          uuid.UUID  `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	ItemInfoID  *uuid.UUID `json:"item_info_id,omitempty" gorm:"type:uuid;index:idx_items_item_info_id"`
-	Kind        Kind       `json:"kind" gorm:"type:text;not null;index:idx_items_kind"`
-	Brand       Brand      `json:"brand" gorm:"type:text;not null;index:idx_items_brand"`
-	Lang        Lang       `json:"lang" gorm:"type:char(2);not null;index:idx_items_lang"`
-	Code        string     `json:"code" gorm:"type:varchar(50);not null;default:'';index:idx_items_code"`
-	Name        string     `json:"name" gorm:"type:text;not null;index:idx_items_name"`
-	Description string     `json:"description" gorm:"type:text"`
-	Image       Image      `json:"image" gorm:"type:jsonb;serializer:json"`
-	ReleaseAt   time.Time  `json:"release_at"`
-	CreatedAt   time.Time  `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt   time.Time  `json:"updated_at" gorm:"autoUpdateTime"`
+	ID          uuid.UUID      `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	ItemInfoID  *uuid.UUID     `json:"item_info_id,omitempty" gorm:"type:uuid;index:idx_items_item_info_id"`
+	Kind        Kind           `json:"kind" gorm:"type:text;not null;index:idx_items_kind"`
+	Subtypes    map[string]any `json:"subtypes,omitempty" gorm:"type:jsonb;serializer:json"`
+	Brand       Brand          `json:"brand" gorm:"type:text;not null;index:idx_items_brand"`
+	Lang        Lang           `json:"lang" gorm:"type:char(2);not null;index:idx_items_lang"`
+	Code        string         `json:"code" gorm:"type:varchar(50);not null;default:'';index:idx_items_code"`
+	Name        string         `json:"name" gorm:"type:text;not null;index:idx_items_name"`
+	Description string         `json:"description" gorm:"type:text"`
+	Image       Image          `json:"image" gorm:"type:jsonb;serializer:json"`
+	ReleaseAt   time.Time      `json:"release_at"`
+	CreatedAt   time.Time      `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt   time.Time      `json:"updated_at" gorm:"autoUpdateTime"`
 }
 
 type CardPrinted struct {
@@ -42,8 +44,8 @@ type Set struct {
 	QuantityCardsPerPack uint   `json:"quantity_cards_per_pack" gorm:"not null;default:0"`
 	QuantityPacksPerSet  uint   `json:"quantity_packs_per_set" gorm:"not null;default:0"`
 	// CardsPrinted is the inverse of CardPrinted.SetID. When preloading it,
-	// filter by kind = KindCard because items also contains sets and accessories
-	// that may reference the same set.
+	// filter by kind = KindCard because items also contains sets, playmats and
+	// sleeves that may reference the same set.
 	CardsPrinted []CardPrinted `json:"cards_printed,omitempty" gorm:"foreignKey:SetID;references:ID;-:migration"`
 }
 
@@ -56,7 +58,6 @@ func NewItem(
 	releaseAt time.Time,
 ) *Item {
 	return &Item{
-		ID:          uuid.New(),
 		ItemInfoID:  infoID,
 		Kind:        kind,
 		Lang:        lang,
@@ -102,20 +103,52 @@ func NewSet(
 	}
 }
 
-// NewAccessory creates a standalone item that does not belong to a set and may
-// not have an ItemInfo, such as an external accessory product.
-func NewAccessory(
+// NewPlaymat creates a playmat item. Playmats carry their own brand and
+// subtypes; they do not belong to a set.
+func NewPlaymat(
 	infoID *uuid.UUID,
+	brand Brand,
+	subtypes map[string]any,
 	lang Lang,
 	code, name, description string,
 	image Image,
 	releaseAt time.Time,
 ) *Item {
-	return NewItem(infoID, KindAccessory, lang, code, name, description, image, releaseAt)
+	return newPlainItem(infoID, KindPlaymat, brand, subtypes, lang, code, name, description, image, releaseAt)
+}
+
+// NewSleeve creates a sleeve item. Sleeves carry their own brand and subtypes;
+// they do not belong to a set.
+func NewSleeve(
+	infoID *uuid.UUID,
+	brand Brand,
+	subtypes map[string]any,
+	lang Lang,
+	code, name, description string,
+	image Image,
+	releaseAt time.Time,
+) *Item {
+	return newPlainItem(infoID, KindSleeve, brand, subtypes, lang, code, name, description, image, releaseAt)
+}
+
+func newPlainItem(
+	infoID *uuid.UUID,
+	kind Kind,
+	brand Brand,
+	subtypes map[string]any,
+	lang Lang,
+	code, name, description string,
+	image Image,
+	releaseAt time.Time,
+) *Item {
+	item := NewItem(infoID, kind, lang, code, name, description, image, releaseAt)
+	item.Brand = brand
+	item.Subtypes = subtypes
+	return item
 }
 
 // ItemInfo holds shared information for cards, sets and, optionally, other
-// products such as accessories.
+// products such as playmats and sleeves.
 type ItemInfo struct {
 	ID             uuid.UUID      `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
 	Kind           Kind           `json:"kind" gorm:"type:text;not null;uniqueIndex:idx_item_infos_identity,priority:1;index:idx_item_infos_kind"`
@@ -182,6 +215,8 @@ const (
 
 	// Yu-Gi-Oh! Rush Duel
 	BrandYGORD Brand = "YGORD"
+
+	BrandDS Brand = "DRAGON_SHIELD"
 )
 
 // Kind defines the kind of catalog item
@@ -194,8 +229,11 @@ const (
 	// Set
 	KindSet Kind = "SET"
 
-	// Accessory
-	KindAccessory Kind = "Playmat"
+	// Playmat
+	KindPlaymat Kind = "PLAYMAT"
+
+	// Sleeve
+	KindSleeve Kind = "SLEEVE"
 )
 
 // Lang defines the language of the catalog item

@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -40,7 +41,9 @@ var itemInfoMutableColumns = []string{
 }
 
 // itemConflictColumns matches idx_items_identity. It is the conflict target for
-// CardPrinted, Set and plain Item rows.
+// CardPrinted, Set and plain Item rows. Subtypes are part of the identity so
+// product variants that only differ by subtype (for example sleeve sizes) do
+// not overwrite each other.
 var itemConflictColumns = []clause.Column{
 	{Name: "kind"},
 	{Name: "brand"},
@@ -51,6 +54,7 @@ var itemConflictColumns = []clause.Column{
 	{Name: "edition"},
 	{Name: "extended_art"},
 	{Name: "set_id"},
+	{Name: "subtypes"},
 }
 
 // itemMutableColumns are updated when the item identity already exists.
@@ -158,7 +162,7 @@ func (r *Repository) UpsertItemInfos(ctx context.Context, infos []ItemInfo) erro
 	return nil
 }
 
-// UpsertItems inserts or updates plain Item rows, such as accessories.
+// UpsertItems inserts or updates plain Item rows, such as playmats and sleeves.
 func (r *Repository) UpsertItems(ctx context.Context, items []Item) error {
 	return upsertItemRows(r.db.WithContext(ctx), items)
 }
@@ -204,6 +208,7 @@ type itemIdentity struct {
 	Edition     string
 	ExtendedArt bool
 	SetID       string
+	Subtypes    string
 }
 
 type itemIdentityer interface {
@@ -217,7 +222,23 @@ func (i Item) itemIdentity() itemIdentity {
 		Lang:       i.Lang,
 		Code:       i.Code,
 		ItemInfoID: uuidString(i.ItemInfoID),
+		Subtypes:   subtypesKey(i.Subtypes),
 	}
+}
+
+// subtypesKey returns a canonical representation of the subtypes map for the
+// in-memory dedupe. encoding/json sorts map keys, so the result is stable.
+func subtypesKey(subtypes map[string]any) string {
+	if subtypes == nil {
+		return ""
+	}
+
+	data, err := json.Marshal(subtypes)
+	if err != nil {
+		return fmt.Sprintf("%v", subtypes)
+	}
+
+	return string(data)
 }
 
 func (c CardPrinted) itemIdentity() itemIdentity {

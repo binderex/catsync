@@ -41,7 +41,7 @@ func (s *Service) UpsertItemInfos(ctx context.Context, infos []ItemInfo) error {
 	return s.repo.UpsertItemInfos(batchCtx, infos)
 }
 
-// UpsertItems inserts or updates plain Item rows, such as accessories.
+// UpsertItems inserts or updates plain Item rows, such as playmats and sleeves.
 func (s *Service) UpsertItems(ctx context.Context, items []Item) error {
 	batchCtx, cancel := context.WithTimeout(ctx, upsertBatchTimeout)
 	defer cancel()

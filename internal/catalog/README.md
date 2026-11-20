@@ -15,7 +15,8 @@ The catalog uses two tables:
 item_infos 1 ─── N items
                       ├── CardPrinted (kind = CARD)
                       ├── Set         (kind = SET)
-                      └── Item        (kind = ACCESSORY or another product)
+                      ├── Item        (kind = PLAYMAT)
+                      └── Item        (kind = SLEEVE)
 
 Set 1 ─── N CardPrinted
         items.set_id = items.id (kind = SET)
@@ -24,9 +25,9 @@ Set 1 ─── N CardPrinted
 `ItemInfoID` and `SetID` are optional:
 
 - `ItemInfoID = nil` means the item has no shared card/set information. This is
-  valid for external products such as accessories.
+  valid for external products such as playmats and sleeves.
 - `SetID = nil` means the item does not belong to a set. This is valid for sets,
-  standalone accessories and cards without a set.
+  standalone playmats/sleeves and cards without a set.
 - A card print normally has both `ItemInfoID` and `SetID`.
 
 ## Identity
@@ -36,11 +37,13 @@ Set 1 ─── N CardPrinted
 The unique index is:
 
 ```text
-(kind, brand, lang, code, item_info_id, rarity, edition, extended_art, set_id)
+(kind, brand, lang, code, item_info_id, rarity, edition, extended_art, set_id, subtypes)
 ```
 
 It is created as `idx_items_identity` with `NULLS NOT DISTINCT`, so items with
 `item_info_id = NULL` or `set_id = NULL` still participate in the identity.
+`subtypes` is `jsonb` and is part of the identity so product variants that only
+differ by subtype, such as sleeve sizes, are stored as separate rows.
 
 ### `item_infos`
 
@@ -71,7 +74,7 @@ IDs are `uuid.UUID` from `github.com/google/uuid`.
 | `GetItemInfo(ctx, source, brand, kind)` | Returns the first item info matching the non-empty filters. |
 | `UpsertItemInfo(ctx, info)` | Inserts or updates one item info by `source`. |
 | `UpsertItemInfos(ctx, infos)` | Batch version of `UpsertItemInfo`. |
-| `UpsertItems(ctx, items)` | Inserts or updates plain `Item` rows, such as accessories. |
+| `UpsertItems(ctx, items)` | Inserts or updates plain `Item` rows, such as playmats and sleeves. |
 | `UpsertCardPrinted(ctx, prints)` | Inserts or updates card print rows. |
 | `UpsertSets(ctx, sets)` | Inserts or updates set rows. The `CardsPrinted` association is not persisted. |
 
@@ -98,6 +101,41 @@ func (s *Service) UpsertCardPrinted(ctx context.Context, prints []CardPrinted) e
 func (s *Service) UpsertSets(ctx context.Context, sets []Set) error
 ```
 
+## Playmats and sleeves
+
+Playmats and sleeves are plain `Item` rows (`KindPlaymat`, `KindSleeve`). They
+do not belong to a set and may have no `ItemInfo`. Both constructors accept a
+brand and a subtype map:
+
+```go
+playmat := catalog.NewPlaymat(
+    nil,
+    catalog.BrandDS,
+    map[string]any{"size": "standard", "finish": "japanese"},
+    catalog.LangEN,
+    "DS-MAT-001",
+    "Dragon Shield Playmat",
+    "",
+    image,
+    releaseAt,
+)
+
+sleeve := catalog.NewSleeve(
+    nil,
+    catalog.BrandDS,
+    map[string]any{"finish": "matte", "size": "standard"},
+    catalog.LangEN,
+    "DS-SLV-001",
+    "Dragon Shield Sleeves",
+    "",
+    image,
+    releaseAt,
+)
+```
+
+`Brand` and `Subtypes` are stored on the shared `Item` row but are only set by
+these constructors. Card prints and sets use the regular `NewItem` constructor.
+
 ## Upsert behavior
 
 ### `item_infos`
@@ -119,7 +157,7 @@ conflict. A missing `source` returns `ErrItemInfoSourceRequired`.
 Conflict target:
 
 ```text
-kind, brand, lang, code, item_info_id, rarity, edition, extended_art, set_id
+kind, brand, lang, code, item_info_id, rarity, edition, extended_art, set_id, subtypes
 ```
 
 Mutable columns:
@@ -144,8 +182,8 @@ type Set struct {
 }
 ```
 
-It is not a database column. Because `items` also contains sets and accessories,
-always filter by kind when loading it:
+It is not a database column. Because `items` also contains sets, playmats and
+sleeves, always filter by kind when loading it:
 
 ```go
 db.Preload("CardsPrinted", "kind = ?", catalog.KindCard).Find(&set)
@@ -160,7 +198,7 @@ err := db.
     Find(&prints).Error
 ```
 
-If an accessory belongs to a set and sets `SetID`, it would also match
+If a playmat or sleeve belongs to a set and sets `SetID`, it would also match
 `set_id = set.ID`. The `kind = CARD` filter is what keeps `CardsPrinted`
 semantically correct.
 
