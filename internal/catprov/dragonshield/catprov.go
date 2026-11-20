@@ -50,7 +50,7 @@ func (p *Provider) GetSleeves(ctx context.Context) ([]catalog.Item, error) {
 		collectionURL = cardSleevesURL
 	}
 
-	browser := retrier.NewChromedp()
+	browser := retrier.NewChromedp(retrier.WithChromedpProvider("dragonshield"))
 
 	var items []catalog.Item
 	var productFilter retrier.Filter

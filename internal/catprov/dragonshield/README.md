@@ -87,8 +87,8 @@ Pagination is read from `a[rel="next"]` / `link[rel="next"]`.
 | `Kind` | `catalog.KindSleeve` |
 | `Brand` | `catalog.BrandDS` |
 | `Lang` | `catalog.LangEN` |
-| `Code` | Variant SKU from `script.js-product-options-props`; fallback to `span[data-sku]` |
-| `Name` | Variant `name` (normally `h1 + " - " + variant title`); fallback to the `h1` |
+| `Code` | Variant SKU; fallback to visible SKU. |
+| `Name` | Variant name; fallback to `h1`. |
 | `Description` | Empty |
 | `Image.URLSmall` | Main gallery image with `width=480` |
 | `Image.URLLarge` | Main gallery image with `width=800` |
@@ -118,7 +118,7 @@ If the JSON is missing, the provider creates one item from the visible SKU.
 
 | Key | Source |
 | --- | --- |
-| `color` | `small[data-current-swatch-title]`, fallback `data-original-swatch-title` |
+| `color` | Current swatch title; fallback original. |
 | `size` | Specification `Size`, fallback variant title |
 | `texture` | Specification `Texture` |
 | `glare_type` | Specification `Glare Type` |
@@ -190,7 +190,9 @@ Live tests are opt-in because they open a browser and can take several minutes:
 ```powershell
 $env:DRAGONSHIELD_LIVE="1"
 
-go test ./internal/catprov/dragonshield -run TestGetSleevesLive -v -count=1 -timeout 12m
+go test ./internal/catprov/dragonshield `
+  -run TestGetSleevesLive -v `
+  -count=1 -timeout 12m
 ```
 
 `TestGetSleevesLive` scrapes the real collection and fails when no items are
