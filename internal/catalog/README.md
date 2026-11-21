@@ -88,7 +88,8 @@ IDs are `uuid.UUID` from `github.com/google/uuid`.
 | `UpsertItems(ctx, items)` | Upserts playmats and sleeves. |
 | `UpsertCardPrinted(ctx, prints)` | Upserts card print rows. |
 | `UpsertSets(ctx, sets)` | Upserts sets; prints are not persisted. |
-| `UpsertSetWithPrints(ctx, set, prints)` | Upserts a set and its prints. |
+| `UpsertSetWithPrints(ctx, set, prints)` | Upserts one set and its prints atomically. |
+| `UpsertSetsWithPrints(ctx, sets)` | Bulk upsert of many sets and their prints. |
 
 `GetItemInfo` applies only the filters that are not empty:
 
@@ -102,7 +103,10 @@ matches, the returned error wraps `gorm.ErrRecordNotFound`.
 
 ## Service
 
-`Service` wraps the repository and applies a timeout to upserts:
+`Service` delegates to the repository. The repository writes rows in batches of
+250 and applies a 2-minute timeout to **each batch**; there is no total timeout
+for a full catalog upsert. That keeps one stalled statement from blocking the
+job forever without cancelling a legitimate long crawl.
 
 ```go
 func (s *Service) GetItemInfo(
@@ -139,6 +143,10 @@ func (s *Service) UpsertSetWithPrints(
     ctx context.Context,
     set *Set,
     prints []CardPrinted,
+) error
+func (s *Service) UpsertSetsWithPrints(
+    ctx context.Context,
+    sets []Set,
 ) error
 ```
 
@@ -267,6 +275,32 @@ The method:
 It does **not** delete prints that are no longer present. If a set loses prints,
 add a reconciliation step that deletes the missing rows before or after the
 upsert, within the same transaction.
+
+## Bulk upserting sets with their prints
+
+Full Yu-Gi-Oh! crawls contain thousands of sets and hundreds of thousands of
+prints. Creating one transaction per set makes the persistence phase spend most
+of its time on round trips, so the command uses `UpsertSetsWithPrints`:
+
+```go
+if err := service.UpsertSetsWithPrints(ctx, sets); err != nil {
+    return err
+}
+```
+
+The bulk method:
+
+- deduplicates sets by identity and keeps the prints of every duplicate;
+- assigns `kind = KindSet` and an ID to every set;
+- upserts all sets;
+- resolves the persisted set IDs with one query;
+- assigns `SetID = set.ID` and `kind = KindCard` to every print;
+- upserts all prints in batches.
+
+Unlike `UpsertSetWithPrints`, the bulk method is **not atomic across the whole
+catalog**: sets and prints are committed in independent batches. Re-running it
+is safe because every write is an idempotent upsert. A failure while writing
+prints leaves the sets in place; the next run adds the missing prints.
 
 ## Example
 

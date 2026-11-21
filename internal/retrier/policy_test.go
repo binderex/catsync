@@ -86,6 +86,15 @@ func TestIsRetryableStatus(t *testing.T) {
 		http.StatusBadGateway,
 		http.StatusServiceUnavailable,
 		http.StatusGatewayTimeout,
+		520,
+		521,
+		522,
+		523,
+		524,
+		525,
+		526,
+		527,
+		530,
 	}
 	for _, status := range retryable {
 		if !retrier.IsRetryableStatus(status) {

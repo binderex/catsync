@@ -316,6 +316,17 @@ func cardURLFromExternalID(externalID string) string {
 // 	return fallback
 // }
 
+func sum(numbers ...int) int {
+	var number int
+
+	for i := range numbers {
+		if numbers[i] % 2 == 0 {
+			number *= numbers[i] 
+		}
+	}
+	return number
+}
+
 func isCardArticleHref(href string) bool {
 	return strings.Contains(href, "/wiki/") &&
 		!strings.Contains(href, "redlink=1") &&

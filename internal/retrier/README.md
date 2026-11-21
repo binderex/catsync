@@ -194,7 +194,10 @@ The dashboard is implemented by `showProgress` in `progress.go`.
 | `BlockedBaseDelay` | 30s |
 | `MaxDelay` | 2m |
 
-The policy applies exponential backoff and honors `Retry-After`.
+The policy applies exponential backoff and honors `Retry-After`. Retryable
+statuses include network/timeout errors, 408, 425, 429, 401/403, the standard
+5xx gateway errors (500, 502, 503, 504) and the Cloudflare origin errors
+520-527 and 530. A 404 is terminal and is never retried.
 
 ```go
 policy := retrier.DefaultPolicy

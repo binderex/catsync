@@ -91,7 +91,19 @@ func IsRetryableStatus(status int) bool {
 		http.StatusInternalServerError,
 		http.StatusBadGateway,
 		http.StatusServiceUnavailable,
-		http.StatusGatewayTimeout:
+		http.StatusGatewayTimeout,
+		// Cloudflare-specific gateway errors. They are transient origin
+		// failures, not missing pages, and should get the same retry treatment
+		// as the standard 5xx statuses.
+		520, // unknown error from the origin
+		521, // origin web server is down
+		522, // connection to the origin timed out
+		523, // origin is unreachable
+		524, // origin timed out
+		525, // SSL handshake failed
+		526, // invalid SSL certificate
+		527, // Railgun error
+		530: // origin DNS error
 		return true
 	default:
 		return false

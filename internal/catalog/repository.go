@@ -5,13 +5,25 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
-const upsertBatchSize = 50
+const (
+	// upsertBatchSize is the number of rows sent in each INSERT. Large crawls
+	// contain hundreds of thousands of prints, so small batches spend most of
+	// their time on network round trips.
+	upsertBatchSize = 250
+
+	// upsertBatchTimeout bounds a single batch. It is deliberately applied per
+	// batch instead of per high-level call: a full catalog has too many rows
+	// for one fixed deadline, but a stalled statement should still fail.
+	upsertBatchTimeout = 2 * time.Minute
+)
 
 var (
 	// ErrItemInfoFilterRequired is returned when GetItemInfo is called without
@@ -138,7 +150,10 @@ func (r *Repository) UpsertItemInfo(ctx context.Context, info *ItemInfo) error {
 		return ErrItemInfoSourceRequired
 	}
 
-	err := r.db.WithContext(ctx).
+	batchCtx, cancel := context.WithTimeout(ctx, upsertBatchTimeout)
+	defer cancel()
+
+	err := r.db.WithContext(batchCtx).
 		Clauses(clause.OnConflict{
 			Columns:   itemInfoConflictColumns,
 			DoUpdates: clause.AssignmentColumns(itemInfoMutableColumns),
@@ -165,12 +180,10 @@ func (r *Repository) UpsertItemInfos(ctx context.Context, infos []ItemInfo) erro
 
 	infos = dedupeItemInfos(infos)
 
-	err := r.db.WithContext(ctx).
-		Clauses(clause.OnConflict{
-			Columns:   itemInfoConflictColumns,
-			DoUpdates: clause.AssignmentColumns(itemInfoMutableColumns),
-		}).
-		CreateInBatches(&infos, upsertBatchSize).Error
+	err := createInBatches(ctx, r.db, infos, clause.OnConflict{
+		Columns:   itemInfoConflictColumns,
+		DoUpdates: clause.AssignmentColumns(itemInfoMutableColumns),
+	})
 	if err != nil {
 		return fmt.Errorf("upsert item infos: %w", err)
 	}
@@ -180,18 +193,81 @@ func (r *Repository) UpsertItemInfos(ctx context.Context, infos []ItemInfo) erro
 
 // UpsertItems inserts or updates plain Item rows, such as playmats and sleeves.
 func (r *Repository) UpsertItems(ctx context.Context, items []Item) error {
-	return upsertItemRows(r.db.WithContext(ctx), items)
+	return upsertItemRows(ctx, r.db, items)
 }
 
 // UpsertCardPrinted inserts or updates card print rows.
 func (r *Repository) UpsertCardPrinted(ctx context.Context, prints []CardPrinted) error {
-	return upsertItemRows(r.db.WithContext(ctx), prints)
+	return upsertItemRows(ctx, r.db, prints)
 }
 
 // UpsertSets inserts or updates set rows. The CardsPrinted association is not
 // persisted here.
 func (r *Repository) UpsertSets(ctx context.Context, sets []Set) error {
-	return upsertItemRows(r.db.WithContext(ctx), sets)
+	return upsertItemRows(ctx, r.db, sets)
+}
+
+// UpsertSetsWithPrints is the bulk variant of UpsertSetWithPrints. It upserts
+// every set, resolves the persisted IDs in one query, attaches those IDs to the
+// prints, and then upserts every print. Sets and prints are written in batches
+// instead of one transaction per set; re-running the operation is safe.
+func (r *Repository) UpsertSetsWithPrints(ctx context.Context, sets []Set) error {
+	sets = dedupeSets(sets)
+	if len(sets) == 0 {
+		return nil
+	}
+
+	printCount := 0
+	for i := range sets {
+		set := &sets[i]
+		set.Kind = KindSet
+		if set.ID == uuid.Nil {
+			set.ID = uuid.New()
+		}
+		printCount += len(set.CardsPrinted)
+	}
+
+	if err := upsertItemRows(ctx, r.db, sets); err != nil {
+		return fmt.Errorf("upsert sets: %w", err)
+	}
+
+	// The upsert preserves the existing ID on conflict. Resolve the actual IDs
+	// after writing so the prints never point to a discarded set.
+	persistedIDs, err := r.findSetIDs(ctx, sets)
+	if err != nil {
+		return err
+	}
+
+	for i := range sets {
+		set := &sets[i]
+		id, ok := persistedIDs[set.itemIdentity()]
+		if !ok {
+			return fmt.Errorf("persisted set %q was not found", set.Name)
+		}
+		set.ID = id
+
+		for j := range set.CardsPrinted {
+			print := &set.CardsPrinted[j]
+			print.Kind = KindCard
+			print.SetID = &set.ID
+		}
+	}
+
+	log.Printf(
+		"catalog: upserted %d sets; upserting %d prints",
+		len(sets),
+		printCount,
+	)
+
+	prints := make([]CardPrinted, 0, printCount)
+	for i := range sets {
+		prints = append(prints, sets[i].CardsPrinted...)
+	}
+	if err := upsertItemRows(ctx, r.db, prints); err != nil {
+		return fmt.Errorf("upsert card prints: %w", err)
+	}
+
+	return nil
 }
 
 // UpsertSetWithPrints inserts or updates a set and its card prints in one
@@ -271,21 +347,87 @@ func (r *Repository) findSetID(ctx context.Context, set Set) (uuid.UUID, error) 
 	return uuid.Nil, fmt.Errorf("find persisted set id: %w", gorm.ErrRecordNotFound)
 }
 
-func upsertItemRows[T itemIdentityer](db *gorm.DB, rows []T) error {
+// findSetIDs resolves every persisted set in sets in one query. The returned
+// map is keyed by the same identity used by the item upsert.
+func (r *Repository) findSetIDs(ctx context.Context, sets []Set) (map[itemIdentity]uuid.UUID, error) {
+	brands := make([]Brand, 0, len(sets))
+	seen := make(map[Brand]bool, len(sets))
+	for _, set := range sets {
+		if seen[set.Brand] {
+			continue
+		}
+		seen[set.Brand] = true
+		brands = append(brands, set.Brand)
+	}
+	if len(brands) == 0 {
+		return map[itemIdentity]uuid.UUID{}, nil
+	}
+
+	var rows []Set
+	err := r.db.WithContext(ctx).
+		Model(&Set{}).
+		Select("id", "brand", "lang", "code", "item_info_id", "subtypes").
+		Where("kind = ?", KindSet).
+		Where("brand IN ?", brands).
+		Where("rarity = '' AND edition = '' AND extended_art = false AND set_id IS NULL").
+		Find(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("find persisted sets: %w", err)
+	}
+
+	ids := make(map[itemIdentity]uuid.UUID, len(rows))
+	for _, row := range rows {
+		row.Kind = KindSet
+		ids[row.itemIdentity()] = row.ID
+	}
+
+	return ids, nil
+}
+
+func upsertItemRows[T itemIdentityer](ctx context.Context, db *gorm.DB, rows []T) error {
 	rows = dedupeItemRows(rows)
 	if len(rows) == 0 {
 		return nil
 	}
 
-	err := db.
-		Omit(clause.Associations).
-		Clauses(clause.OnConflict{
+	err := createInBatches(
+		ctx,
+		db.Omit(clause.Associations),
+		rows,
+		clause.OnConflict{
 			Columns:   itemConflictColumns,
 			DoUpdates: clause.AssignmentColumns(itemMutableColumns),
-		}).
-		CreateInBatches(&rows, upsertBatchSize).Error
+		},
+	)
 	if err != nil {
 		return fmt.Errorf("upsert items: %w", err)
+	}
+
+	return nil
+}
+
+// createInBatches writes rows in batches and applies a fresh timeout to each
+// batch. GORM's CreateInBatches uses one context for the whole slice, which
+// makes a fixed timeout unusable for full catalog crawls.
+func createInBatches[T any](
+	ctx context.Context,
+	db *gorm.DB,
+	rows []T,
+	clauses ...clause.Expression,
+) error {
+	for start := 0; start < len(rows); start += upsertBatchSize {
+		end := min(start+upsertBatchSize, len(rows))
+
+		batchCtx, cancel := context.WithTimeout(ctx, upsertBatchTimeout)
+		batch := rows[start:end]
+		err := db.WithContext(batchCtx).
+			Clauses(clauses...).
+			Create(&batch).Error
+		cancel()
+
+		if err != nil {
+			return fmt.Errorf("batch rows %d-%d: %w", start, end, err)
+		}
 	}
 
 	return nil
@@ -367,6 +509,31 @@ func dedupeItemRows[T itemIdentityer](rows []T) []T {
 
 		positions[identity] = len(unique)
 		unique = append(unique, row)
+	}
+
+	return unique
+}
+
+// dedupeSets keeps one row per set identity. The last set wins the metadata,
+// but prints from every duplicate are retained.
+func dedupeSets(sets []Set) []Set {
+	positions := make(map[itemIdentity]int, len(sets))
+	unique := make([]Set, 0, len(sets))
+
+	for _, set := range sets {
+		set.Kind = KindSet
+		identity := set.itemIdentity()
+		if position, ok := positions[identity]; ok {
+			set.CardsPrinted = append(
+				unique[position].CardsPrinted,
+				set.CardsPrinted...,
+			)
+			unique[position] = set
+			continue
+		}
+
+		positions[identity] = len(unique)
+		unique = append(unique, set)
 	}
 
 	return unique

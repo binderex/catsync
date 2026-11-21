@@ -125,6 +125,22 @@ images. Section IDs are not used because they can be duplicated.
 | `mediawiki.go` | Semantic MediaWiki set index. |
 | `utils.go` | Shared parsing helpers. |
 
+## Persistence
+
+After the crawl, `cmd/sync/ygo` persists the result in three phases:
+
+1. upsert the deduplicated `ItemInfo` rows;
+2. upsert all sets in bulk and resolve their persisted IDs in one query;
+3. attach those IDs to the prints and upsert all card prints in bulk.
+
+Rows are written in batches of 250, and each batch has its own timeout. A full
+catalog is larger than the old 15-minute persistence deadline, so persistence
+runs until it finishes or the process is interrupted with Ctrl+C. Persistence
+is idempotent; if it stops after writing some sets, running
+`go run ./cmd/sync/ygo -mode all -resume` reuses `ygo-releases-state.json`,
+retries the pending pages and upserts the catalog again without re-scraping the
+completed pages.
+
 ## Checkpoints and reports
 
 `GetAllReleases` uses:

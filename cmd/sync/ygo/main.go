@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"time"
 
 	"github.com/joho/godotenv"
 
@@ -81,9 +80,15 @@ func run() error {
 	log.Printf("ygo: mode=%s scraped %d sets", mode, len(sets))
 
 	// Persist partial results even when the crawl was cancelled. The
-	// checkpoint has already been written by GetAllReleases.
-	persistCtx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
-	defer cancel()
+	// checkpoint has already been written by GetAllReleases. Use a fresh
+	// signal context instead of a fixed deadline: a full catalog can take
+	// longer than 15 minutes to upsert, and a hard deadline would cancel the
+	// final batches. Press Ctrl+C again to abort persistence.
+	persistCtx, persistStop := signal.NotifyContext(
+		context.Background(),
+		os.Interrupt,
+	)
+	defer persistStop()
 
 	service := catalog.NewService(catalog.NewRepository(db))
 	if err := persistSets(persistCtx, service, sets); err != nil {
@@ -99,7 +104,7 @@ func run() error {
 			}
 			return nil
 		}
-		return scrapeErr
+		return fmt.Errorf("crawl finished with errors after persisting the catalog: %w", scrapeErr)
 	}
 
 	return nil
@@ -155,6 +160,7 @@ func persistSets(ctx context.Context, service *catalog.Service, sets []catalog.S
 	if err := service.UpsertItemInfos(ctx, infosToUpsert); err != nil {
 		return fmt.Errorf("upsert %d item infos: %w", len(infosToUpsert), err)
 	}
+	log.Printf("ygo: upserted %d item infos", len(infosToUpsert))
 
 	printCount := 0
 	for setIndex := range sets {
@@ -172,10 +178,15 @@ func persistSets(ctx context.Context, service *catalog.Service, sets []catalog.S
 			}
 		}
 		printCount += len(set.CardsPrinted)
+	}
 
-		if err := service.UpsertSetWithPrints(ctx, set, set.CardsPrinted); err != nil {
-			return fmt.Errorf("upsert set %q: %w", set.Name, err)
-		}
+	log.Printf(
+		"ygo: upserting %d sets and %d prints in bulk",
+		len(sets),
+		printCount,
+	)
+	if err := service.UpsertSetsWithPrints(ctx, sets); err != nil {
+		return fmt.Errorf("upsert %d sets with prints: %w", len(sets), err)
 	}
 
 	log.Printf(

@@ -1,13 +1,6 @@
 package catalog
 
-import (
-	"context"
-	"time"
-)
-
-// upsertBatchTimeout prevents a stalled database connection from blocking the
-// whole synchronization forever.
-const upsertBatchTimeout = 2 * time.Minute
+import "context"
 
 // Service contains the catalog use cases.
 type Service struct {
@@ -33,48 +26,36 @@ func (s *Service) GetItemInfosByBrand(ctx context.Context, brand Brand) ([]ItemI
 
 // UpsertItemInfo inserts or updates one item info by source.
 func (s *Service) UpsertItemInfo(ctx context.Context, info *ItemInfo) error {
-	batchCtx, cancel := context.WithTimeout(ctx, upsertBatchTimeout)
-	defer cancel()
-
-	return s.repo.UpsertItemInfo(batchCtx, info)
+	return s.repo.UpsertItemInfo(ctx, info)
 }
 
 // UpsertItemInfos inserts or updates a batch of item infos by source.
 func (s *Service) UpsertItemInfos(ctx context.Context, infos []ItemInfo) error {
-	batchCtx, cancel := context.WithTimeout(ctx, upsertBatchTimeout)
-	defer cancel()
-
-	return s.repo.UpsertItemInfos(batchCtx, infos)
+	return s.repo.UpsertItemInfos(ctx, infos)
 }
 
 // UpsertItems inserts or updates plain Item rows, such as playmats and sleeves.
 func (s *Service) UpsertItems(ctx context.Context, items []Item) error {
-	batchCtx, cancel := context.WithTimeout(ctx, upsertBatchTimeout)
-	defer cancel()
-
-	return s.repo.UpsertItems(batchCtx, items)
+	return s.repo.UpsertItems(ctx, items)
 }
 
 // UpsertCardPrinted inserts or updates card print rows.
 func (s *Service) UpsertCardPrinted(ctx context.Context, prints []CardPrinted) error {
-	batchCtx, cancel := context.WithTimeout(ctx, upsertBatchTimeout)
-	defer cancel()
-
-	return s.repo.UpsertCardPrinted(batchCtx, prints)
+	return s.repo.UpsertCardPrinted(ctx, prints)
 }
 
 // UpsertSets inserts or updates set rows.
 func (s *Service) UpsertSets(ctx context.Context, sets []Set) error {
-	batchCtx, cancel := context.WithTimeout(ctx, upsertBatchTimeout)
-	defer cancel()
-
-	return s.repo.UpsertSets(batchCtx, sets)
+	return s.repo.UpsertSets(ctx, sets)
 }
 
 // UpsertSetWithPrints inserts or updates a set and its card prints atomically.
 func (s *Service) UpsertSetWithPrints(ctx context.Context, set *Set, prints []CardPrinted) error {
-	batchCtx, cancel := context.WithTimeout(ctx, upsertBatchTimeout)
-	defer cancel()
+	return s.repo.UpsertSetWithPrints(ctx, set, prints)
+}
 
-	return s.repo.UpsertSetWithPrints(batchCtx, set, prints)
+// UpsertSetsWithPrints inserts or updates many sets and their prints in bulk.
+// It is intended for full catalog crawls; re-running it is safe.
+func (s *Service) UpsertSetsWithPrints(ctx context.Context, sets []Set) error {
+	return s.repo.UpsertSetsWithPrints(ctx, sets)
 }
