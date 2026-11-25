@@ -1,0 +1,27 @@
+# internal/infrastructure
+
+Adapters for the application ports.
+
+```text
+catprov/
+  dragonshield/   Dragon Shield sleeve scraper
+  ygo/            Yu-Gi-Oh! provider, checkpoint and scrapers
+persistence/
+  json/           single-file retrier store
+  sql/postgresql/catalog/  catalog repository and migration
+```
+
+## Providers
+
+Both providers implement `ports.CatalogProvider` and return flat
+`[]domain.Item` slices. Provider-specific parsing stays inside each package;
+transport and retry logic comes from `internal/utility/retrier`.
+
+- [Yu-Gi-Oh!](catprov/ygo/README.md)
+- [Dragon Shield](catprov/dragonshield/README.md)
+
+## Persistence
+
+- [Persistence overview](persistence/README.md)
+- [JSON retrier store](persistence/json/README.md)
+- [PostgreSQL catalog](persistence/sql/postgresql/catalog/README.md)

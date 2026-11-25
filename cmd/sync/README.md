@@ -1,149 +1,60 @@
 # cmd/sync
 
-Catsync synchronization commands.
-
-- `cmd/sync/dragonshield` synchronizes Dragon Shield sleeves.
-- `cmd/sync/ygo` synchronizes Yu-Gi-Oh! sets and card prints.
-
-Both commands:
-
-- load `.env` when present;
-- require `DB_URL`;
-- run database migrations when connecting;
-- persist through `catalog.Service`;
-- stop on `Ctrl+C`.
-
-YGO also persists partial results after cancellation. Dragon Shield only
-upserts after collecting the complete sleeve list.
-
-Run the commands from the repository root so checkpoints and reports use the
-expected paths.
-
-## Requirements
-
-- Go 1.27.3 or newer.
-- PostgreSQL reachable through `DB_URL`.
-- Brave, Chrome or Edge for Dragon Shield.
-
-Example `.env`:
-
-```dotenv
-DB_URL=postgres://user:password@localhost:5432/catsync?sslmode=disable
-
-# Optional for Dragon Shield:
-# DRAGONSHIELD_BROWSER=C:\path\to\brave.exe
-```
-
-## Dragon Shield
+Single synchronization entry point for Catsync.
 
 ```powershell
-go run ./cmd/sync/dragonshield
+go run ./cmd/sync -catprov ygo -mode new
+go run ./cmd/sync -catprov ygo -mode all
+go run ./cmd/sync -catprov dragonshield -mode all
 ```
 
-The command has no flags.
+## Files
 
-It opens a visible browser, follows the card sleeve collection and its
-pagination, and upserts every product variant. A Cloudflare challenge may need
-to be solved manually in the browser window.
+| File | Responsibility |
+| --- | --- |
+| `main.go` | Wiring: flags, use cases, provider selection and execution. |
+| `config.go` | DSN, retrier path/interval, medium parsing and environment helpers. |
 
-The retrier writes a report to:
+## Flags
 
-```text
-reports/dragonshield_<state>_<date>.json
-```
-
-The browser is detected automatically. To use a specific browser:
-
-```powershell
-$env:DRAGONSHIELD_BROWSER = "C:\path\to\brave.exe"
-go run ./cmd/sync/dragonshield
-```
-
-## Yu-Gi-Oh
-
-### Modes
-
-```powershell
-# Newly announced sets, from the Yugipedia main page (default)
-go run ./cmd/sync/ygo
-
-# Same mode, explicitly
-go run ./cmd/sync/ygo -mode new
-
-# Every set in Category:All sets
-go run ./cmd/sync/ygo -mode all
-
-# Continue a full crawl from its checkpoint
-go run ./cmd/sync/ygo -mode all -resume
-```
-
-Flags:
-
+- `-catprov`: `ygo` or `dragonshield`. Required.
 - `-mode`: `new` or `all`. Default: `new`.
-- `-resume`: continues from `ygo-releases-state.json`.
-  Only valid with `-mode all`.
-- `-mediums`: comma-separated list. Empty means all.
+- `-resume`: resume the latest unfinished run. Default: `true`.
+  Use `-resume=false` for a fresh crawl.
+- `-mediums`: comma-separated YGO mediums. Default: `TCG,OCG`.
+- `-rush-duel`: include Rush Duel. Default: `false` until an official English
+  release exists.
+- `-retrier-json`: retrier document. Default: `data/retrier.json`.
 
-### `new` mode
+## Configuration
 
-- Scrapes the sets announced on the Yugipedia main page.
-- Does not use a checkpoint.
-- Each run starts over. A later run can fill pages that failed before.
+The command loads `.env` from the repository root and, as a fallback, the
+parent `C:\Users\natan\Proyectos\Binderex\.env`.
 
-### `all` mode
+- `DB_URL` (or `CATSYNC_DB_URL`): PostgreSQL DSN.
+- When `DB_URL` is missing, the DSN is built from `POSTGRES_HOST`,
+  `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD` and `POSTGRES_DB`.
+- `RETRIER_JSON_PATH`: overrides `-retrier-json`.
+- `RETRIER_SAVE_INTERVAL`: seconds or Go duration between intermediate saves.
+  Default: `10s`.
+- `DRAGONSHIELD_BROWSER`: optional browser executable.
 
-- Walks every set in `Category:All sets`.
-- Can take a long time.
-- Writes progress to:
+PostgreSQL is the parent compose container, exposed on port `5433`.
 
-```text
-ygo-releases-state.json
-```
+## State files
 
-`-resume` continues pending pages and reuses extracted sets. Without it, the
-command removes the old checkpoint and starts from scratch.
+- `data/retrier.json`: retrier run state in the current `domain.RetrierRun`
+  format (`version: 2`). It contains the URL progress and, in `provider_data`,
+  the parsed provider snapshot.
+- `data/ygo-crawl-report.json`: summary of the last YGO crawl.
 
-### Filtering by medium
+`-resume=true` reuses the latest unfinished run and its provider snapshot.
+`-resume=false` starts a new run. The `data/` folder is git-ignored.
 
-```powershell
-go run ./cmd/sync/ygo -mediums "TCG,OCG"
-go run ./cmd/sync/ygo -mode all -mediums "Rush Duel"
-```
-
-### Reports
-
-Every YGO run writes:
-
-- `ygo-crawl-report.json`: catalog summary with sets, prints and failures.
-- `reports/ygo_<state>_<date>.json`: retrier queue report.
-
-Retrier states are `success`, `cancelled` or `failed`.
-
-`ygo-crawl-report.json` is overwritten on each run. Retrier reports use a new
-UTC timestamp.
-
-### Persistence
-
-- `ItemInfo` rows are fetched by brand and upserted in batches.
-- Sets use `UpsertSetWithPrints`, which resolves the persisted set ID before
-  linking prints.
-- Upserts are designed to update existing rows without duplicates.
-- On cancellation, YGO persists partial sets and saves the checkpoint in
-  `all` mode.
-
-## Verification
+## Validation
 
 ```powershell
 go build ./...
-go test ./... -short -count=1
 go vet ./...
+go test ./... -short
 ```
-
-Live provider test:
-
-```powershell
-go test ./internal/catprov/ygo \
-  -run TestGetNewReleasesLive -v -count=1 -timeout 15m
-```
-
-Live tests are not part of `-short`.

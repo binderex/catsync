@@ -16,52 +16,63 @@ catalog model, and persists it in PostgreSQL.
 
 ## Current repository state
 
-The repository is **mid-refactor**. The new catalog model (`catalog.Item`,
-`catalog.CardPrinted`, `catalog.Set`, `catalog.ItemInfo`) and the new retrier
-package exist. The legacy catalog provider files were removed; the active
-providers are Dragon Shield and Yu-Gi-Oh!.
+The project is a **first version under active development**. The catalog uses
+the single denormalized `domain.Item` model and the retrier is a JSON-backed
+utility. The active code has no dependency on any previous data format.
 
 ## Layout
 
 | Path | Responsibility |
 | --- | --- |
-| `cmd/sync/dragonshield` | Scrapes Dragon Shield sleeves and upserts them. |
-| `cmd/sync/ygo` | Scrapes Yu-Gi-Oh! releases, resumes from a checkpoint and upserts sets/prints. |
-| `internal/catprov/dragonshield` | Dragon Shield provider and HTML parsing. |
-| `internal/catprov/ygo` | Yu-Gi-Oh! provider, release checkpoint, card and set scrapers. |
-| `internal/retrier` | Generic retry queue with HTTP, Colly and Chromedp transports. |
-| `internal/catalog` | Catalog model, identity rules, repository and service. |
-| `internal/database` | PostgreSQL connection and migrations. |
+| `cmd/sync` | Single synchronization entry point; `-catprov` selects Dragon Shield or Yu-Gi-Oh!. |
+| `cmd/recover` | Rebuilds the YGO snapshot from PostgreSQL when `data/retrier.json` is lost. |
+| `internal/utility/retrier` | Retrier utility (HTTP, Colly, Chromedp, progress, filters). No business rules. |
+| `internal/utility/recovery` | Rebuilds the YGO provider snapshot from PostgreSQL. |
+| `internal/domain` | Retrier and catalog domain types, identity and deduplication; no infrastructure imports. |
+| `internal/application` | Ports and use cases for catalog providers and retrier persistence. |
+| `internal/infrastructure/catprov` | Dragon Shield and Yu-Gi-Oh! providers returning `domain.Item`. |
+| `internal/infrastructure/persistence/json` | Single-file retrier store. |
+| `internal/infrastructure/persistence/sql/postgresql/catalog` | Denormalized catalog upsert, cleanup and PostgreSQL migration. |
 
 Provider docs:
 
-- [`internal/catprov/dragonshield/README.md`](internal/catprov/dragonshield/README.md)
-- [`internal/catprov/ygo/README.md`](internal/catprov/ygo/README.md)
-- [`internal/retrier/README.md`](internal/retrier/README.md)
+- [`internal/infrastructure/catprov/dragonshield/README.md`](internal/infrastructure/catprov/dragonshield/README.md)
+- [`internal/infrastructure/catprov/ygo/README.md`](internal/infrastructure/catprov/ygo/README.md)
+- [`internal/utility/retrier/README.md`](internal/utility/retrier/README.md)
 
 ## Commands
 
 Regular validation:
 
 ```powershell
-go test ./internal/retrier ./internal/catprov/dragonshield ./internal/catprov/ygo ./cmd/sync/dragonshield ./cmd/sync/ygo
-go vet ./internal/retrier ./internal/catprov/dragonshield ./internal/catprov/ygo ./cmd/sync/dragonshield ./cmd/sync/ygo
+go build ./...
+go vet ./...
+go test ./... -short
 ```
 
 Run the synchronizations:
 
 ```powershell
-go run ./cmd/sync/dragonshield
-go run ./cmd/sync/ygo                 # GetNewReleases (default)
-go run ./cmd/sync/ygo -mode all       # GetAllReleases, fresh crawl
-go run ./cmd/sync/ygo -mode all -resume
+go run ./cmd/sync -catprov ygo -mode new
+go run ./cmd/sync -catprov ygo -mode all
+go run ./cmd/sync -catprov dragonshield -mode all
 ```
 
-`-mode all` starts a fresh crawl and overwrites `ygo-releases-state.json`;
-`-mode all -resume` continues from that checkpoint. The default mode is
-`new` (`GetNewReleases`) and does not use a checkpoint. Every crawl writes
-`ygo-crawl-report.json` with counts, set/print totals and the failed URLs.
+Rebuild the snapshot if the retrier document is lost:
 
+```powershell
+go run ./cmd/recover
+```
+
+`-resume` defaults to `true`; `-resume=false` starts a new retrier run. The
+parsed provider snapshot is stored in `data/retrier.json` under
+`provider_data`. Every YGO crawl writes `data/ygo-crawl-report.json` with
+counts, set/print totals and the failed URLs.
+
+The retrier state is a single JSON document at `data/retrier.json` inside the
+catsync project and can be changed with `-retrier-json` /
+`RETRIER_JSON_PATH`. PostgreSQL is the local container from the parent
+`C:\Users\natan\Proyectos\Binderex\compose.yaml` on port `5433`.
 `DB_URL` must be set in the environment or in `.env`.
 
 Live browser tests are opt-in. They open a real browser and are not part of the
@@ -70,8 +81,9 @@ default test run:
 ```powershell
 $env:DRAGONSHIELD_LIVE="1"
 
-go test ./internal/retrier -run TestChromedpNavigatesDragonShield -v -count=1 -timeout 5m
-go test ./internal/catprov/dragonshield -run TestGetSleevesLive -v -count=1 -timeout 12m
+go test ./internal/infrastructure/catprov/dragonshield -run TestGetSleevesLive -v -count=1 -timeout 12m
+go test ./internal/infrastructure/catprov/ygo -run TestGetNewReleasesLive -v -count=1 -timeout 15m
+go test ./internal/infrastructure/catprov/ygo -run TestFetchMediawikiAllSetsLive -v -count=1 -timeout 10m
 ```
 
 `-short` skips the live tests.
@@ -96,35 +108,37 @@ go test ./internal/catprov/dragonshield -run TestGetSleevesLive -v -count=1 -tim
      This is the normal path while the grid shows skeletons.
 - One catalog item is created per product variant.
 - The item code is the variant SKU, not only the visible product number.
-- `subtypes` contains `color`, `size`, `texture`, `glare_type`, `quality`,
-  `items_per_case`, `material`, `layer`, and `clear` when applicable.
+- Variant attributes live in `properties["variant"]`: `color`, `size`,
+  `texture`, `glare_type`, `quality`, `items_per_case`, `material`, `layer`,
+  and `clear` when applicable.
 - The main product image is taken from `.js-product-gallery-image img` and
   rendered at `width=480` and `width=800`.
 
 ## Database rules
 
-- `database.New(dsn)` opens PostgreSQL and runs `Migrate`.
-- `Item`, `CardPrinted` and `Set` share the `items` table.
-- **Do not merge their `AutoMigrate` calls into one call.** GORM deduplicates
-  models by table name inside a single `AutoMigrate`, so only one model would
-  contribute its columns. Migrate them one at a time:
-
-  ```go
-  for _, model := range []any{
-      &catalog.Item{},
-      &catalog.CardPrinted{},
-      &catalog.Set{},
-      &catalog.ItemInfo{},
-  } {
-      if err := db.AutoMigrate(model); err != nil {
-          return err
-      }
-  }
-  ```
-
-- `idx_items_identity` includes `subtypes`; it is part of the item identity.
-- `subtypes` is not in `itemMutableColumns`. Do not add it unless the user asks
-  to change the identity rules.
+- The active catalog path is `catalogpg.Open(dsn)`, which calls
+  `catalogpg.Migrate` and creates the denormalized `items` table.
+- `domain.Item` is the only catalog entity in the new model: `user_id` was
+  removed and non-identity data lives in `Properties`.
+- The identity index is
+  `(kind, brand, lang, code, set_id, rarity, edition, extended_art, source, variant_key)`
+  with `NULLS NOT DISTINCT`. `variant_key` is a generated column.
+- `source` is part of the identity and cannot be empty. `CatalogUseCase.Upsert`
+  rejects empty sources and the migration adds the `items_source_not_empty`
+  check constraint.
+- `CatalogUseCase.Upsert` fills IDs/defaults and calls
+  `domain.DeduplicateItems` before the repository; the repository expects
+  unique, normalized items.
+- Items named `unknown` are placeholders: the use case drops them and the
+  migration deletes any existing rows.
+- Only regular `CARD` rows whose `card_types` contains `Monster`, `Spell` or
+  `Trap` are persisted. Tokens, Strategy, Tip, Checklist, Skill and Non-game
+  cards are dropped; the migration deletes existing ones.
+- Sets that belong to Rush Duel and TCG/OCG at the same time are skipped.
+  Sets that had cards but no regular card left are deleted (`SSTK` is the
+  token-only example); sets with no card data are kept.
+- Cards whose `set_id` points to a missing set are dropped; the migration
+  deletes existing orphan cards.
 
 ## Coding conventions
 
@@ -133,18 +147,20 @@ go test ./internal/catprov/dragonshield -run TestGetSleevesLive -v -count=1 -tim
 - Keep exported types and functions documented.
 - Prefer `context.Context` for I/O and pass cancellation through.
 - Keep provider-specific parsing in the provider package; keep transport and
-  retry logic in `internal/retrier`.
+  retry logic in `internal/utility/retrier` for the new providers.
 - Do not commit `.env`, cookies, browser profiles or generated credentials.
 
 ## Testing notes
 
 - Unit tests for the Dragon Shield parser use HTML fixtures and do not need a
   browser.
-- The Chromedp test is an integration test: it launches Brave/Chrome/Edge and
-  navigates to the real collection.
-- `TestGetSleevesLive` scrapes the full collection. At the time of writing it
-  collected 230 sleeves in about 5m24s.
+- `TestGetSleevesLive` is opt-in (`DRAGONSHIELD_LIVE=1`) and scrapes the real
+  collection. At the time of writing it collected 230 sleeves in about 5m24s.
+- The YGO live tests are `TestGetNewReleasesLive` and
+  `TestFetchMediawikiAllSetsLive`; `-short` skips them.
 - If a live test fails because Cloudflare returns a challenge, run it with a
   visible browser and solve the challenge if the window asks for it.
 - The retrier progress dashboard only renders when stdout is a terminal. Test
   output will not show it.
+- GORM slow-query logs are disabled in the sync; only warnings and errors are
+  printed.

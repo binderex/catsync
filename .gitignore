@@ -27,12 +27,8 @@ temp/
 # Test output
 sets_output.json
 
-# YGO release checkpoint and crawl report
-ygo-releases-state.json
-ygo-crawl-report.json
-
-# Retrier run reports
-reports/
+# Generated state and reports
+data/
 
 # Editors / IDEs
 .idea/
