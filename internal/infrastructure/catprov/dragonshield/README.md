@@ -4,6 +4,9 @@ Dragon Shield catalog provider. It scrapes the card sleeve collection and
 returns denormalized `domain.Item` values ready to be upserted by the catalog
 use case.
 
+All returned items are global (`StoreID == nil`); store-owned items belong to
+the .NET service.
+
 Dragon Shield is protected by Cloudflare, so the provider uses the
 [`Chromedp` transport](../../../utility/retrier/README.md) of the retrier
 utility instead of plain HTTP or Colly. A real browser is required to pass the

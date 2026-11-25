@@ -47,6 +47,9 @@ func (uc *CatalogUseCase) Upsert(ctx context.Context, items []domain.Item) (int,
 	if len(items) > 0 {
 		normalized := domain.DeduplicateItems(prepareItems(items))
 		for _, item := range normalized {
+			if item.StoreID != nil {
+				return 0, fmt.Errorf("catalog item %s %q belongs to a store", item.Kind, item.Code)
+			}
 			if strings.TrimSpace(item.Source) == "" {
 				return 0, fmt.Errorf("catalog item %s %q has an empty source", item.Kind, item.Code)
 			}

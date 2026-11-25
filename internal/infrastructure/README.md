@@ -8,8 +8,11 @@ catprov/
   ygo/            Yu-Gi-Oh! provider, checkpoint and scrapers
 persistence/
   json/           single-file retrier store
-  sql/postgresql/catalog/  catalog repository and migration
+  sql/postgresql/catalog/  itemModel, catalog repository and migration
 ```
+
+The catalog adapter writes only global rows (`store_id IS NULL`). Store-owned
+rows share the `items` table and are managed by the store service.
 
 ## Providers
 

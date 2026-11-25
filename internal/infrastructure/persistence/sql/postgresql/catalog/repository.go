@@ -20,6 +20,7 @@ const (
 )
 
 var itemIdentityColumns = []clause.Column{
+	{Name: "store_id"},
 	{Name: "kind"},
 	{Name: "brand"},
 	{Name: "lang"},
@@ -42,7 +43,8 @@ var itemMutableColumns = []string{
 	"updated_at",
 }
 
-// Repository persists the denormalized catalog items in PostgreSQL.
+// Repository persists the denormalized global catalog items in PostgreSQL.
+// Store-owned rows share the same table but are not written by Catsync.
 type Repository struct {
 	db *gorm.DB
 }
@@ -106,7 +108,8 @@ func (r *Repository) Upsert(ctx context.Context, items []domain.Item) error {
 	return propagateSourceVerification(ctx, r.db, items)
 }
 
-// Delete removes the given sets and any rows that still reference them.
+// Delete removes the given global sets and any global rows that still
+// reference them. Store-owned rows are never touched.
 func (r *Repository) Delete(ctx context.Context, ids []string) error {
 	if len(ids) == 0 {
 		return nil
@@ -118,25 +121,28 @@ func (r *Repository) Delete(ctx context.Context, ids []string) error {
 	}
 
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("set_id IN ?", parsed).Delete(&itemModel{}).Error; err != nil {
+		if err := tx.Where("store_id IS NULL").Where("set_id IN ?", parsed).Delete(&itemModel{}).Error; err != nil {
 			return fmt.Errorf("delete rows for sets: %w", err)
 		}
-		if err := tx.Where("id IN ?", parsed).Delete(&itemModel{}).Error; err != nil {
+		if err := tx.Where("store_id IS NULL").Where("id IN ?", parsed).Delete(&itemModel{}).Error; err != nil {
 			return fmt.Errorf("delete sets: %w", err)
 		}
 		return nil
 	})
 }
 
-// Load returns the catalog items of the given kinds. It is used by the
-// recovery utility, which rebuilds the provider snapshot from PostgreSQL.
+// Load returns the global catalog items of the given kinds. Store-owned rows
+// are excluded; the recovery utility rebuilds the global provider snapshot.
 func (r *Repository) Load(ctx context.Context, kinds ...domain.Kind) ([]domain.Item, error) {
 	if len(kinds) == 0 {
 		return nil, nil
 	}
 
 	var rows []itemModel
-	if err := r.db.WithContext(ctx).Where("kind IN ?", kinds).Find(&rows).Error; err != nil {
+	if err := r.db.WithContext(ctx).
+		Where("kind IN ?", kinds).
+		Where("store_id IS NULL").
+		Find(&rows).Error; err != nil {
 		return nil, fmt.Errorf("load catalog items: %w", err)
 	}
 
@@ -185,6 +191,7 @@ func loadSetIDs(
 			"properties",
 		).
 		Where("kind = ?", domain.KindSet).
+		Where("store_id IS NULL").
 		Where("brand IN ?", brands).
 		Find(&rows).Error
 	if err != nil {
@@ -276,7 +283,7 @@ func propagateSourceVerification(
 			builder.WriteString("(?::text, ?::boolean)")
 			args = append(args, source, values[source])
 		}
-		builder.WriteString(`) AS v(source, verified) WHERE i.source = v.source AND i.verified_source IS DISTINCT FROM v.verified`)
+		builder.WriteString(`) AS v(source, verified) WHERE i.source = v.source AND i.store_id IS NULL AND i.verified_source IS DISTINCT FROM v.verified`)
 
 		batchCtx, cancel := context.WithTimeout(ctx, upsertBatchTimeout)
 		err := db.WithContext(batchCtx).Exec(builder.String(), args...).Error

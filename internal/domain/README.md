@@ -8,35 +8,46 @@ Core types and rules. This package has no infrastructure imports and no I/O.
 
 ```go
 type Item struct {
-    ID        uuid.UUID
-    Kind      Kind
-    Brand     Brand
-    Lang      Lang
-    Code      string
-    SetID     *uuid.UUID
-    Rarity    string
-    Edition   string
-    ExtendedArt bool
-    Source    string
+    ID             string
+    StoreID        *string
+    Kind           Kind
+    Brand          Brand
+    Lang           Lang
+    Code           string
+    SetID          *string
+    Rarity         string
+    Edition        string
+    ExtendedArt    bool
+    Source         string
     VerifiedSource bool
-    Name      string
-    Description string
-    Image     Image
-    ReleaseAt time.Time
-    Properties map[string]any
+    Name           string
+    Description    string
+    Image          Image
+    ReleaseAt      time.Time
+    Properties     map[string]any
 }
 ```
+
+IDs are strings in the domain. The PostgreSQL adapter converts them to
+`uuid.UUID`. `StoreID` is `nil` for global catalog rows and set for store-owned
+rows; Catsync only produces global rows.
+
+The struct keeps its `json` tags because the retrier snapshot serializes
+`domain.Item`. It has no GORM tags; the persistence model lives in the
+PostgreSQL adapter.
 
 ### Identity
 
 `Item.IdentityKey()` is the canonical identity used by the upsert. It includes:
 
 ```text
-kind, brand, lang, code, set_id, rarity, edition,
+store_id, kind, brand, lang, code, set_id, rarity, edition,
 extended_art, source, variant
 ```
 
-`source` is part of the identity and must never be empty.
+`store_id` keeps global and store-owned rows in separate identity scopes.
+`source` is part of the identity. Global rows must have a non-empty source;
+store-owned rows may leave it empty.
 
 ### Properties
 

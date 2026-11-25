@@ -143,6 +143,27 @@ func TestCatalogUpsertRejectsEmptySource(t *testing.T) {
 	}
 }
 
+func TestCatalogUpsertRejectsStoreItems(t *testing.T) {
+	repo := &fakeCatalogRepository{}
+	uc := NewCatalogUseCase(repo)
+	storeID := uuid.NewString()
+
+	_, err := uc.Upsert(context.Background(), []domain.Item{{
+		StoreID: &storeID,
+		Kind:    domain.KindSleeve,
+		Brand:   domain.BrandDS,
+		Lang:    domain.LangEN,
+		Code:    "SKU-1",
+		Source:  "https://example.com/sleeve",
+	}})
+	if err == nil {
+		t.Fatal("expected store-owned item error")
+	}
+	if repo.calls != 0 {
+		t.Fatal("repository must not be called for a store-owned item")
+	}
+}
+
 func TestCatalogUpsertSkipsUnknownNames(t *testing.T) {
 	repo := &fakeCatalogRepository{}
 	uc := NewCatalogUseCase(repo)

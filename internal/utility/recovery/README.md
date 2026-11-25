@@ -6,23 +6,30 @@ the catalog rows are still available.
 
 ## What it does
 
-1. Loads every `SET` and `CARD` from `items`.
+1. Loads every global `SET` and `CARD` from `items` (`store_id IS NULL`).
 2. Groups cards by `set_id`.
 3. Builds a complete `releasesCheckpoint` in the current format.
 4. Writes it as `provider_data` of an `interrupted` YGO `all` run in the
    retrier JSON document.
 
 Cards whose set is missing are counted as orphans and are not included.
+Store-owned rows are excluded.
 
 ## API
 
 ```go
+type ItemSource interface {
+    Load(ctx context.Context, kinds ...domain.Kind) ([]domain.Item, error)
+}
+
 func BuildSnapshot(items []domain.Item) (json.RawMessage, Stats, error)
 
-func Run(ctx context.Context, db *gorm.DB, path string) (Stats, error)
+func Run(ctx context.Context, source ItemSource, path string) (Stats, error)
 ```
 
-`Stats` reports items, sets, cards, orphan cards, bytes and the output path.
+`cmd/recover` passes a `catalogpg.Repository`, whose `Load` returns only global
+rows. `Stats` reports items, sets, cards, orphan cards, bytes and the output
+path.
 
 ## Running
 

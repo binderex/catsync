@@ -14,7 +14,8 @@ import (
 // The JSON tags are part of the retrier snapshot contract; persistence models
 // live in the infrastructure adapters.
 type Item struct {
-	ID string `json:"id"`
+	ID      string  `json:"id"`
+	StoreID *string `json:"store_id,omitempty"`
 
 	// Identity and common query fields.
 	Kind        Kind    `json:"kind"`
@@ -91,6 +92,7 @@ const (
 // Metadata changes such as Name or Description do not change this key.
 func (i Item) IdentityKey() string {
 	payload := map[string]any{
+		"store_id":     i.StoreID,
 		"kind":         i.Kind,
 		"brand":        i.Brand,
 		"lang":         i.Lang,
@@ -106,9 +108,9 @@ func (i Item) IdentityKey() string {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Sprintf(
-			"%v|%v|%v|%v|%v|%v|%v|%v|%v|%v",
-			payload["kind"], payload["brand"], payload["lang"], payload["code"],
-			payload["set_id"], payload["rarity"], payload["edition"],
+			"%v|%v|%v|%v|%v|%v|%v|%v|%v|%v|%v",
+			payload["store_id"], payload["kind"], payload["brand"], payload["lang"],
+			payload["code"], payload["set_id"], payload["rarity"], payload["edition"],
 			payload["extended_art"], payload["source"], payload["variant"],
 		)
 	}

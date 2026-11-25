@@ -12,8 +12,10 @@ import (
 // itemModel is the GORM model for the items table. It owns the persistence
 // types and tags; domain.Item stays free of GORM concerns. The JSON tags used
 // by the JSONB columns live in domain.Image and the Properties values.
+// StoreID is nil for global catalog rows and set for store-owned rows.
 type itemModel struct {
-	ID uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	ID      uuid.UUID  `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	StoreID *uuid.UUID `gorm:"type:uuid;index:idx_items_store_id"`
 
 	Kind        string     `gorm:"type:text;not null;index:idx_items_kind"`
 	Brand       string     `gorm:"type:text;not null;index:idx_items_brand"`
@@ -59,8 +61,18 @@ func itemToModel(item domain.Item) (itemModel, error) {
 		setID = &parsed
 	}
 
+	var storeID *uuid.UUID
+	if item.StoreID != nil {
+		parsed, err := parseID(*item.StoreID)
+		if err != nil {
+			return itemModel{}, fmt.Errorf("item %s %q store id: %w", item.Kind, item.Code, err)
+		}
+		storeID = &parsed
+	}
+
 	return itemModel{
 		ID:             id,
+		StoreID:        storeID,
 		Kind:           string(item.Kind),
 		Brand:          string(item.Brand),
 		Lang:           string(item.Lang),
@@ -118,6 +130,10 @@ func (m itemModel) toDomain() domain.Item {
 	if m.SetID != nil {
 		setID := m.SetID.String()
 		item.SetID = &setID
+	}
+	if m.StoreID != nil {
+		storeID := m.StoreID.String()
+		item.StoreID = &storeID
 	}
 	return item
 }

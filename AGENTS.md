@@ -123,28 +123,37 @@ go test ./internal/infrastructure/catprov/ygo -run TestFetchMediawikiAllSetsLive
   retrier snapshot. It has no GORM tags.
 - The PostgreSQL adapter owns `itemModel`, the GORM model for `items`. Its
   fields use explicit persistence types (`uuid.UUID`, `string`) and GORM tags.
-- `domain.Item.ID` and `SetID` are strings. `itemModel` converts them to UUIDs
-  and rejects invalid values before writing.
+- `domain.Item.ID`, `SetID` and `StoreID` are strings. `itemModel` converts them
+  to UUIDs and rejects invalid values before writing.
+- `items.store_id` is nullable: `NULL` is a global catalog item (the only rows
+  Catsync writes); non-null is a store-owned item. The migration seeds a minimal
+  `stores` table (`stores.id`, snake_case) and adds the FK.
+- The identity index starts with `store_id` and uses `NULLS NOT DISTINCT`, so
+  global rows are unique among themselves and each store has its own scope.
+- Catsync only reads and writes global rows: `Load`, `loadSetIDs`, `Delete`,
+  source verification and migration cleanup filter `store_id IS NULL`.
+- `items_source_not_empty` is `CHECK (store_id IS NOT NULL OR source <> '')`.
 - There is no `user_id`; non-identity data lives in `Properties`.
 - The identity index is
-  `(kind, brand, lang, code, set_id, rarity, edition, extended_art, source, variant_key)`
+  `(store_id, kind, brand, lang, code, set_id, rarity, edition, extended_art, source, variant_key)`
   with `NULLS NOT DISTINCT`. `variant_key` is a generated column.
-- `source` is part of the identity and cannot be empty. `CatalogUseCase.Upsert`
-  rejects empty sources and the migration adds the `items_source_not_empty`
-  check constraint.
+- `source` is part of the identity. Global rows cannot have an empty source;
+  `CatalogUseCase.Upsert` rejects empty sources and the migration adds the
+  `items_source_not_empty` check constraint.
 - `CatalogUseCase.Upsert` fills IDs/defaults and calls
   `domain.DeduplicateItems` before the repository; the repository expects
-  unique, normalized items.
+  unique, normalized items. It rejects items with `StoreID` set, because
+  store-owned rows are written by the .NET service.
 - Items named `unknown` are placeholders: the use case drops them and the
-  migration deletes any existing rows.
+  migration deletes existing global rows.
 - Only regular `CARD` rows whose `card_types` contains `Monster`, `Spell` or
   `Trap` are persisted. Tokens, Strategy, Tip, Checklist, Skill and Non-game
-  cards are dropped; the migration deletes existing ones.
+  cards are dropped; the migration deletes existing global ones.
 - Sets that belong to Rush Duel and TCG/OCG at the same time are skipped.
   Sets that had cards but no regular card left are deleted (`SSTK` is the
   token-only example); sets with no card data are kept.
 - Cards whose `set_id` points to a missing set are dropped; the migration
-  deletes existing orphan cards.
+  deletes existing global orphan cards.
 
 ## Coding conventions
 

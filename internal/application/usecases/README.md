@@ -15,8 +15,9 @@ Flow:
 4. drop sets that had cards but no regular card left;
 5. assign IDs, `Properties` and `UpdatedAt` (`prepareItems`);
 6. deduplicate identities (`domain.DeduplicateItems`);
-7. reject empty `source` values;
-8. upsert the unique rows and delete pruned sets.
+7. reject items with `StoreID` set (Catsync is global-only);
+8. reject empty `source` values;
+9. upsert the unique rows and delete pruned sets.
 
 ## CatalogProviderUseCase
 

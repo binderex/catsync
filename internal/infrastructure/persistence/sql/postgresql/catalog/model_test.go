@@ -12,8 +12,10 @@ import (
 
 func TestItemModelRoundTrip(t *testing.T) {
 	setID := uuid.NewString()
+	storeID := uuid.NewString()
 	item := domain.Item{
 		ID:             uuid.NewString(),
+		StoreID:        &storeID,
 		Kind:           domain.KindCard,
 		Brand:          domain.BrandYGO,
 		Lang:           domain.LangEN,
@@ -48,6 +50,9 @@ func TestItemModelRoundTrip(t *testing.T) {
 	if model.SetID == nil || model.SetID.String() != setID {
 		t.Errorf("model set id = %v, want %q", model.SetID, setID)
 	}
+	if model.StoreID == nil || model.StoreID.String() != storeID {
+		t.Errorf("model store id = %v, want %q", model.StoreID, storeID)
+	}
 	if model.Kind != string(item.Kind) || model.Brand != string(item.Brand) || model.Lang != string(item.Lang) {
 		t.Errorf("model identity = %q/%q/%q", model.Kind, model.Brand, model.Lang)
 	}
@@ -68,6 +73,13 @@ func TestItemModelRejectsInvalidSetID(t *testing.T) {
 	setID := "not-a-uuid"
 	if _, err := itemToModel(domain.Item{ID: uuid.NewString(), SetID: &setID}); err == nil {
 		t.Fatal("expected invalid set id error")
+	}
+}
+
+func TestItemModelRejectsInvalidStoreID(t *testing.T) {
+	storeID := "not-a-uuid"
+	if _, err := itemToModel(domain.Item{ID: uuid.NewString(), StoreID: &storeID}); err == nil {
+		t.Fatal("expected invalid store id error")
 	}
 }
 

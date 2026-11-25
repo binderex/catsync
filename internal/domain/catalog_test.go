@@ -49,6 +49,17 @@ func TestIdentityIgnoresVerifiedSource(t *testing.T) {
 	}
 }
 
+func TestIdentityIncludesStore(t *testing.T) {
+	item := baseItem()
+	storeID := "store-1"
+	owned := item
+	owned.StoreID = &storeID
+
+	if owned.IdentityKey() == item.IdentityKey() {
+		t.Error("store did not change the identity")
+	}
+}
+
 func TestIdentityIgnoresMutableFields(t *testing.T) {
 	item := baseItem()
 	base := item.IdentityKey()

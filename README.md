@@ -11,7 +11,7 @@ catalog model and writes it to PostgreSQL.
 ## Responsibilities
 
 - discover cards, prints and sets from external providers;
-- normalize provider data into a single `domain.Item` model;
+- normalize provider data into a single `domain.Item` entity;
 - deduplicate by a stable identity before every upsert;
 - keep the PostgreSQL catalog schema up to date;
 - persist crawl progress so long synchronizations can resume.
@@ -36,35 +36,51 @@ internal/utility/retrier (HTTP/Colly/Chromedp queue)
   the retrier run model. No infrastructure imports.
 - **`internal/application`**: ports (interfaces) and use cases. It orchestrates
   providers, catalog upserts and retrier persistence.
-- **`internal/infrastructure`**: Dragon Shield and Yu-Gi-Oh! providers,
-  PostgreSQL catalog adapter and the single-file JSON retrier store.
+- **`internal/infrastructure`**: Dragon Shield and Yu-Gi-Oh! providers, the
+  PostgreSQL `itemModel` and catalog adapter, and the single-file JSON retrier
+  store.
 - **`internal/utility/retrier`**: a small URL queue with retries and transports.
   It has no business rules.
 
 ## Catalog model
 
-Every row lives in one denormalized `items` table (`domain.Item`). Sets, cards,
-sleeves and playmats share the table and are distinguished by `kind`.
+Every row lives in one denormalized `items` table. `domain.Item` is the catalog
+entity; the PostgreSQL adapter maps it to `itemModel`, which owns the GORM tags
+and UUID columns.
 
-The upsert identity is:
+`store_id` is nullable:
+
+- `NULL` → global catalog item (the only rows Catsync writes);
+- non-null → store-owned item (for example custom sleeves, deckboxes or used
+  playmats created by another service).
+
+The unique identity is:
 
 ```text
-(kind, brand, lang, code, set_id, rarity, edition, extended_art, source, variant_key)
+(store_id, kind, brand, lang, code, set_id, rarity, edition,
+ extended_art, source, variant_key)
 ```
 
-- `source` is the item's page URL and **cannot be empty**.
+with `NULLS NOT DISTINCT`, so global rows are unique among themselves and each
+store has its own identity scope.
+
+- `source` is the item's page URL. Global rows **cannot** have an empty source;
+  store-owned rows may.
 - `variant_key` is a generated column derived from `properties->'variant'`.
 - Non-identity data lives in `properties`.
 - `CatalogUseCase.Upsert` removes duplicates and non-standard rows before the
-  repository writes them.
+  repository writes them. It rejects store-owned items; Catsync is global-only.
+- `Repository.Load`, `Delete`, `loadSetIDs`, source verification and migration
+  cleanup are scoped to `store_id IS NULL`.
 
-Current catalog rules:
+Current catalog rules (global rows):
 
 - only monsters, spells and traps are persisted;
 - tokens, strategy, tip, checklist, skill and non-game cards are dropped;
 - items named `unknown` are dropped;
 - sets that have cards but no regular card left are deleted;
 - sets with no card data are kept.
+- store-owned rows are never cleaned up or modified by Catsync.
 
 ## Providers
 

@@ -30,6 +30,8 @@ func (p *Provider) GetNewReleases(
   emits only official English editions; it stays disabled until an English
   release exists.
 - Both methods return sets and prints as a flat `[]domain.Item`.
+- All returned items are global (`StoreID == nil`); store-owned items belong to
+  the .NET service.
 - `GetAllReleases` can checkpoint and resume a long crawl.
 
 ## Flow
