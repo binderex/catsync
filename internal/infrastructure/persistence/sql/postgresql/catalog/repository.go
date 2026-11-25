@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -78,7 +77,7 @@ func (r *Repository) Upsert(ctx context.Context, items []domain.Item) error {
 			return err
 		}
 
-		idMap := make(map[uuid.UUID]uuid.UUID, len(sets))
+		idMap := make(map[string]string, len(sets))
 		for _, set := range sets {
 			id, ok := persisted[set.IdentityKey()]
 			if !ok {
@@ -108,20 +107,44 @@ func (r *Repository) Upsert(ctx context.Context, items []domain.Item) error {
 }
 
 // Delete removes the given sets and any rows that still reference them.
-func (r *Repository) Delete(ctx context.Context, ids []uuid.UUID) error {
+func (r *Repository) Delete(ctx context.Context, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
 
+	parsed, err := parseIDs(ids)
+	if err != nil {
+		return fmt.Errorf("delete sets: %w", err)
+	}
+
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("set_id IN ?", ids).Delete(&domain.Item{}).Error; err != nil {
+		if err := tx.Where("set_id IN ?", parsed).Delete(&itemModel{}).Error; err != nil {
 			return fmt.Errorf("delete rows for sets: %w", err)
 		}
-		if err := tx.Where("id IN ?", ids).Delete(&domain.Item{}).Error; err != nil {
+		if err := tx.Where("id IN ?", parsed).Delete(&itemModel{}).Error; err != nil {
 			return fmt.Errorf("delete sets: %w", err)
 		}
 		return nil
 	})
+}
+
+// Load returns the catalog items of the given kinds. It is used by the
+// recovery utility, which rebuilds the provider snapshot from PostgreSQL.
+func (r *Repository) Load(ctx context.Context, kinds ...domain.Kind) ([]domain.Item, error) {
+	if len(kinds) == 0 {
+		return nil, nil
+	}
+
+	var rows []itemModel
+	if err := r.db.WithContext(ctx).Where("kind IN ?", kinds).Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("load catalog items: %w", err)
+	}
+
+	items := make([]domain.Item, len(rows))
+	for index := range rows {
+		items[index] = rows[index].toDomain()
+	}
+	return items, nil
 }
 
 func splitSets(items []domain.Item) (sets, others []domain.Item) {
@@ -152,10 +175,10 @@ func loadSetIDs(
 	ctx context.Context,
 	db *gorm.DB,
 	brands []domain.Brand,
-) (map[string]uuid.UUID, error) {
-	var rows []domain.Item
+) (map[string]string, error) {
+	var rows []itemModel
 	err := db.WithContext(ctx).
-		Model(&domain.Item{}).
+		Model(&itemModel{}).
 		Select(
 			"id", "kind", "brand", "lang", "code", "set_id",
 			"rarity", "edition", "extended_art", "source", "verified_source",
@@ -168,9 +191,9 @@ func loadSetIDs(
 		return nil, fmt.Errorf("load persisted sets: %w", err)
 	}
 
-	ids := make(map[string]uuid.UUID, len(rows))
+	ids := make(map[string]string, len(rows))
 	for _, row := range rows {
-		ids[row.IdentityKey()] = row.ID
+		ids[row.toDomain().IdentityKey()] = row.ID.String()
 	}
 	return ids, nil
 }
@@ -185,13 +208,18 @@ func upsertBatches(ctx context.Context, db *gorm.DB, items []domain.Item) error 
 
 		batchCtx, cancel := context.WithTimeout(ctx, upsertBatchTimeout)
 		batch := items[start:end]
-		err := db.WithContext(batchCtx).
+		models, err := itemsToModels(batch)
+		if err != nil {
+			cancel()
+			return fmt.Errorf("convert batch rows %d-%d: %w", start, end, err)
+		}
+		err = db.WithContext(batchCtx).
 			Omit(clause.Associations).
 			Clauses(clause.OnConflict{
 				Columns:   itemIdentityColumns,
 				DoUpdates: clause.AssignmentColumns(itemMutableColumns),
 			}).
-			Create(&batch).Error
+			Create(&models).Error
 		cancel()
 
 		if err != nil {

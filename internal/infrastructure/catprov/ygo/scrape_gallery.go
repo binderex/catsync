@@ -355,7 +355,7 @@ func galleryVariants(base domain.Item, sections []gallerySection) []domain.Item 
 		}
 
 		variant := base
-		variant.ID = uuid.New()
+		variant.ID = uuid.NewString()
 		variant.Edition = item.Edition
 		variant.SetProperty(domain.PropertyRarityCode, item.RarityCode)
 		variant.ExtendedArt = item.ExtendedArtwork

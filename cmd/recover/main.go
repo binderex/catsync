@@ -56,7 +56,7 @@ func run() error {
 	}
 	defer sqlDB.Close()
 
-	stats, err := recovery.Run(ctx, db, output)
+	stats, err := recovery.Run(ctx, catalogpg.NewRepository(db), output)
 	if err != nil {
 		return err
 	}

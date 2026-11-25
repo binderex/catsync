@@ -6,42 +6,43 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 // Item is the single denormalized catalog entity. Every catalog row lives in
 // the items table, including sets, printed cards, sleeves and playmats.
+//
+// The JSON tags are part of the retrier snapshot contract; persistence models
+// live in the infrastructure adapters.
 type Item struct {
-	ID uuid.UUID `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	ID string `json:"id"`
 
 	// Identity and common query fields.
-	Kind        Kind       `json:"kind" gorm:"type:text;not null;index:idx_items_kind"`
-	Brand       Brand      `json:"brand" gorm:"type:text;not null;index:idx_items_brand"`
-	Lang        Lang       `json:"lang" gorm:"type:char(2);not null;index:idx_items_lang"`
-	Code        string     `json:"code" gorm:"type:varchar(50);not null;default:'';index:idx_items_code"`
-	SetID       *uuid.UUID `json:"set_id,omitempty" gorm:"type:uuid;index:idx_items_set_id"`
-	Rarity      string     `json:"rarity" gorm:"type:varchar(50);not null;default:''"`
-	Edition     string     `json:"edition" gorm:"type:text;not null;default:''"`
-	ExtendedArt bool       `json:"extended_art" gorm:"not null;default:false"`
+	Kind        Kind    `json:"kind"`
+	Brand       Brand   `json:"brand"`
+	Lang        Lang    `json:"lang"`
+	Code        string  `json:"code"`
+	SetID       *string `json:"set_id,omitempty"`
+	Rarity      string  `json:"rarity"`
+	Edition     string  `json:"edition"`
+	ExtendedArt bool    `json:"extended_art"`
 
 	// Source belongs to the identity. VerifiedSource is mutable: changing it
 	// updates every row that shares the same source.
-	Source         string `json:"source" gorm:"type:text;not null;default:''"`
-	VerifiedSource bool   `json:"verified_source" gorm:"not null;default:false"`
+	Source         string `json:"source"`
+	VerifiedSource bool   `json:"verified_source"`
 
 	// Common display and query fields.
-	Name        string    `json:"name" gorm:"type:text;not null;default:'';index:idx_items_name"`
-	Description string    `json:"description" gorm:"type:text;not null;default:''"`
-	Image       Image     `json:"image" gorm:"type:jsonb;serializer:json;not null;default:'{}'"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	Image       Image     `json:"image"`
 	ReleaseAt   time.Time `json:"release_at"`
 
 	// Properties holds every non-identity field, including the former ItemInfo
 	// fields, card/set details and the variant attributes.
-	Properties map[string]any `json:"properties" gorm:"type:jsonb;serializer:json;not null;default:'{}'"`
+	Properties map[string]any `json:"properties"`
 
-	CreatedAt time.Time `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt time.Time `json:"updated_at" gorm:"autoUpdateTime"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Image holds the small and large variants of an image URL.
@@ -134,10 +135,10 @@ func DeduplicateItems(items []Item) []Item {
 	return unique
 }
 
-func dedup(items []Item) ([]Item, map[uuid.UUID]uuid.UUID) {
+func dedup(items []Item) ([]Item, map[string]string) {
 	unique := make([]Item, 0, len(items))
 	positions := make(map[string]int, len(items))
-	aliases := make(map[uuid.UUID]uuid.UUID, len(items))
+	aliases := make(map[string]string, len(items))
 
 	for _, item := range items {
 		key := item.IdentityKey()
@@ -158,7 +159,7 @@ func dedup(items []Item) ([]Item, map[uuid.UUID]uuid.UUID) {
 	return unique, aliases
 }
 
-func applySetAliases(items []Item, aliases map[uuid.UUID]uuid.UUID) {
+func applySetAliases(items []Item, aliases map[string]string) {
 	for index := range items {
 		if items[index].SetID == nil {
 			continue
@@ -182,7 +183,7 @@ func (i Item) Variant() map[string]any {
 // NewCardPrinted marks item as a printed card and applies its specific fields.
 func NewCardPrinted(
 	item Item,
-	setID *uuid.UUID,
+	setID *string,
 	serialCode, rarity, rarityCode, edition string,
 	extendedArt bool,
 	guaranteedCopies uint,

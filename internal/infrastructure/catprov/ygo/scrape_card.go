@@ -256,7 +256,7 @@ func buildCardPagePrints(
 				ReleaseAt:   row.ReleaseAt,
 				Properties:  make(map[string]any),
 			}
-			print.ID = uuid.New()
+			print.ID = uuid.NewString()
 			print.Properties[domain.PropertySerialCode] = row.SerialCode
 			print.Rarity = rarity
 			applyCardInfo(&print, info)

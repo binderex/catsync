@@ -73,8 +73,8 @@ func prepareItems(items []domain.Item) []domain.Item {
 	now := time.Now().UTC()
 
 	for index := range items {
-		if items[index].ID == uuid.Nil {
-			items[index].ID = uuid.New()
+		if items[index].ID == "" {
+			items[index].ID = uuid.NewString()
 		}
 		if items[index].Properties == nil {
 			items[index].Properties = make(map[string]any)
@@ -90,9 +90,9 @@ func prepareItems(items []domain.Item) []domain.Item {
 // setCardState reports which sets have at least one card and which have at
 // least one regular card. Sets with no cards at all are not pruned because the
 // card list may simply be missing from the crawl.
-func setCardState(items []domain.Item) (map[uuid.UUID]bool, map[uuid.UUID]bool) {
-	withCards := make(map[uuid.UUID]bool)
-	withStandardCards := make(map[uuid.UUID]bool)
+func setCardState(items []domain.Item) (map[string]bool, map[string]bool) {
+	withCards := make(map[string]bool)
+	withStandardCards := make(map[string]bool)
 
 	for _, item := range items {
 		if item.Kind != domain.KindCard || item.SetID == nil {
@@ -109,8 +109,8 @@ func setCardState(items []domain.Item) (map[uuid.UUID]bool, map[uuid.UUID]bool) 
 	return withCards, withStandardCards
 }
 
-func prunedSetIDs(withCards, withStandardCards map[uuid.UUID]bool) []uuid.UUID {
-	pruned := make([]uuid.UUID, 0)
+func prunedSetIDs(withCards, withStandardCards map[string]bool) []string {
+	pruned := make([]string, 0)
 	for id := range withCards {
 		if !withStandardCards[id] {
 			pruned = append(pruned, id)
@@ -119,12 +119,12 @@ func prunedSetIDs(withCards, withStandardCards map[uuid.UUID]bool) []uuid.UUID {
 	return pruned
 }
 
-func excludeSets(items []domain.Item, pruned []uuid.UUID) []domain.Item {
+func excludeSets(items []domain.Item, pruned []string) []domain.Item {
 	if len(pruned) == 0 {
 		return items
 	}
 
-	removed := make(map[uuid.UUID]bool, len(pruned))
+	removed := make(map[string]bool, len(pruned))
 	for _, id := range pruned {
 		removed[id] = true
 	}
@@ -142,7 +142,7 @@ func excludeSets(items []domain.Item, pruned []uuid.UUID) []domain.Item {
 // excludeOrphanCards drops cards whose set is not present in the batch. The
 // set may have been filtered out as an unsupported brand.
 func excludeOrphanCards(items []domain.Item) []domain.Item {
-	sets := make(map[uuid.UUID]bool)
+	sets := make(map[string]bool)
 	for _, item := range items {
 		if item.Kind == domain.KindSet {
 			sets[item.ID] = true

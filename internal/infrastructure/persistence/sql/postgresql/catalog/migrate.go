@@ -4,15 +4,13 @@ import (
 	"fmt"
 
 	"gorm.io/gorm"
-
-	"github.com/binderex/catsync/internal/domain"
 )
 
 // Migrate creates or updates the denormalized items table and its indexes.
 // Existing item_infos data should be backfilled before dropping the old
 // columns; this function only prepares the new shape.
 func Migrate(db *gorm.DB) error {
-	if err := db.AutoMigrate(&domain.Item{}); err != nil {
+	if err := db.AutoMigrate(&itemModel{}); err != nil {
 		return fmt.Errorf("migrate items: %w", err)
 	}
 

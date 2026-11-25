@@ -17,8 +17,9 @@ catalog model, and persists it in PostgreSQL.
 ## Current repository state
 
 The project is a **first version under active development**. The catalog uses
-the single denormalized `domain.Item` model and the retrier is a JSON-backed
-utility. The active code has no dependency on any previous data format.
+the single denormalized `domain.Item` entity and a PostgreSQL `itemModel`; the
+retrier is a JSON-backed utility. The active code has no dependency on any
+previous data format.
 
 ## Layout
 
@@ -32,7 +33,7 @@ utility. The active code has no dependency on any previous data format.
 | `internal/application` | Ports and use cases for catalog providers and retrier persistence. |
 | `internal/infrastructure/catprov` | Dragon Shield and Yu-Gi-Oh! providers returning `domain.Item`. |
 | `internal/infrastructure/persistence/json` | Single-file retrier store. |
-| `internal/infrastructure/persistence/sql/postgresql/catalog` | Denormalized catalog upsert, cleanup and PostgreSQL migration. |
+| `internal/infrastructure/persistence/sql/postgresql/catalog` | GORM `itemModel`, denormalized catalog upsert, cleanup and PostgreSQL migration. |
 
 Provider docs:
 
@@ -118,8 +119,13 @@ go test ./internal/infrastructure/catprov/ygo -run TestFetchMediawikiAllSetsLive
 
 - The active catalog path is `catalogpg.Open(dsn)`, which calls
   `catalogpg.Migrate` and creates the denormalized `items` table.
-- `domain.Item` is the only catalog entity in the new model: `user_id` was
-  removed and non-identity data lives in `Properties`.
+- `domain.Item` is the only catalog entity and keeps the JSON tags used by the
+  retrier snapshot. It has no GORM tags.
+- The PostgreSQL adapter owns `itemModel`, the GORM model for `items`. Its
+  fields use explicit persistence types (`uuid.UUID`, `string`) and GORM tags.
+- `domain.Item.ID` and `SetID` are strings. `itemModel` converts them to UUIDs
+  and rejects invalid values before writing.
+- There is no `user_id`; non-identity data lives in `Properties`.
 - The identity index is
   `(kind, brand, lang, code, set_id, rarity, edition, extended_art, source, variant_key)`
   with `NULLS NOT DISTINCT`. `variant_key` is a generated column.

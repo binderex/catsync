@@ -115,7 +115,7 @@ func scrapeSetCards(
 					VerifiedSource: true,
 					Properties:     make(map[string]any),
 				}
-				print.ID = uuid.New()
+				print.ID = uuid.NewString()
 				print.SetProperty(domain.PropertySerialCode, cardSerialCode(code))
 				print.SetProperty(domain.PropertyGuaranteedCopies, copies)
 

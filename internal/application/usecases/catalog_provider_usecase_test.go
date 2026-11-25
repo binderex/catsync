@@ -6,8 +6,6 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/google/uuid"
-
 	"github.com/binderex/catsync/internal/application/ports"
 	"github.com/binderex/catsync/internal/domain"
 )
@@ -56,7 +54,7 @@ func (r *countingCatalogRepository) Upsert(_ context.Context, items []domain.Ite
 	return nil
 }
 
-func (r *countingCatalogRepository) Delete(_ context.Context, _ []uuid.UUID) error {
+func (r *countingCatalogRepository) Delete(_ context.Context, _ []string) error {
 	return nil
 }
 

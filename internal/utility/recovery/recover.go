@@ -8,14 +8,16 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
-	"gorm.io/gorm"
-
 	"github.com/binderex/catsync/internal/domain"
 	jsonstore "github.com/binderex/catsync/internal/infrastructure/persistence/json"
 )
 
 const snapshotVersion = 1
+
+// ItemSource loads catalog items for the snapshot.
+type ItemSource interface {
+	Load(ctx context.Context, kinds ...domain.Kind) ([]domain.Item, error)
+}
 
 // Stats summarizes a recovered snapshot.
 type Stats struct {
@@ -42,8 +44,8 @@ type checkpoint struct {
 // BuildSnapshot groups catalog items into a complete YGO checkpoint. Cards
 // whose set is missing are counted as orphans and left out.
 func BuildSnapshot(items []domain.Item) (json.RawMessage, Stats, error) {
-	sets := make(map[uuid.UUID]*savedSet)
-	order := make([]uuid.UUID, 0)
+	sets := make(map[string]*savedSet)
+	order := make([]string, 0)
 
 	for _, item := range items {
 		if item.Kind != domain.KindSet {
@@ -94,12 +96,10 @@ func BuildSnapshot(items []domain.Item) (json.RawMessage, Stats, error) {
 	}, nil
 }
 
-// Run loads the YGO catalog from db and writes the snapshot into path.
-func Run(ctx context.Context, db *gorm.DB, path string) (Stats, error) {
-	var items []domain.Item
-	if err := db.WithContext(ctx).
-		Where("kind IN ?", []domain.Kind{domain.KindSet, domain.KindCard}).
-		Find(&items).Error; err != nil {
+// Run loads the YGO catalog from source and writes the snapshot into path.
+func Run(ctx context.Context, source ItemSource, path string) (Stats, error) {
+	items, err := source.Load(ctx, domain.KindSet, domain.KindCard)
+	if err != nil {
 		return Stats{}, fmt.Errorf("load catalog items: %w", err)
 	}
 

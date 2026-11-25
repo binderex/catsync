@@ -638,7 +638,7 @@ func buildSetItems(
 			VerifiedSource: true,
 			Properties:     make(map[string]any),
 		}
-		item.ID = uuid.New()
+		item.ID = uuid.NewString()
 		item.SetPropertyImages(setImages(setImage))
 		item.SetProperty(domain.PropertySetType, data.setType)
 		item.SetProperty(domain.PropertySetCode, canonicalCode)

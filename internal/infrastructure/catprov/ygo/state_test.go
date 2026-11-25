@@ -22,14 +22,14 @@ func testSetItem(code, name, description string) *domain.Item {
 		VerifiedSource: true,
 		Properties:     make(map[string]any),
 	}
-	set.ID = uuid.New()
+	set.ID = uuid.NewString()
 	set.SetProperty(domain.PropertyRegionalCode, code+"-EN")
 	set.SetProperty(domain.PropertyQuantityCardsPerPack, 9)
 	set.SetProperty(domain.PropertyQuantityPacksPerSet, 24)
 	return set
 }
 
-func testPrintItem(code string, setID *uuid.UUID, info *domain.Item) *domain.Item {
+func testPrintItem(code string, setID *string, info *domain.Item) *domain.Item {
 	print := &domain.Item{
 		Kind:        domain.KindCard,
 		Brand:       domain.BrandYGO,
@@ -42,7 +42,7 @@ func testPrintItem(code string, setID *uuid.UUID, info *domain.Item) *domain.Ite
 		Edition:     "1st Edition",
 		Properties:  make(map[string]any),
 	}
-	print.ID = uuid.New()
+	print.ID = uuid.NewString()
 	print.SetProperty(domain.PropertySerialCode, "001")
 	print.SetProperty(domain.PropertyRarityCode, "C")
 	print.SetProperty(domain.PropertyGuaranteedCopies, 1)

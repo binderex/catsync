@@ -2,8 +2,6 @@ package domain
 
 import (
 	"testing"
-
-	"github.com/google/uuid"
 )
 
 func baseItem() Item {
@@ -71,8 +69,8 @@ func TestIdentityIgnoresMutableFields(t *testing.T) {
 }
 
 func TestDeduplicateItemsRemovesDuplicates(t *testing.T) {
-	firstID := uuid.New()
-	secondID := uuid.New()
+	firstID := "card-first"
+	secondID := "card-second"
 	items := []Item{
 		{
 			ID:     firstID,
@@ -108,8 +106,8 @@ func TestDeduplicateItemsRemovesDuplicates(t *testing.T) {
 }
 
 func TestDeduplicateItemsDedupesAfterSetRemap(t *testing.T) {
-	keptSetID := uuid.New()
-	removedSetID := uuid.New()
+	keptSetID := "set-kept"
+	removedSetID := "set-removed"
 	items := []Item{
 		{
 			ID:     keptSetID,
@@ -128,7 +126,7 @@ func TestDeduplicateItemsDedupesAfterSetRemap(t *testing.T) {
 			Source: "set",
 		},
 		{
-			ID:     uuid.New(),
+			ID:     "card-first",
 			Kind:   KindCard,
 			Brand:  BrandYGO,
 			Lang:   LangEN,
@@ -138,7 +136,7 @@ func TestDeduplicateItemsDedupesAfterSetRemap(t *testing.T) {
 			Name:   "First",
 		},
 		{
-			ID:     uuid.New(),
+			ID:     "card-second",
 			Kind:   KindCard,
 			Brand:  BrandYGO,
 			Lang:   LangEN,
@@ -173,10 +171,10 @@ func TestDeduplicateItemsDedupesAfterSetRemap(t *testing.T) {
 }
 
 func TestDeduplicateItemsRemapsSetReferences(t *testing.T) {
-	keptSetID := uuid.New()
-	removedSetID := uuid.New()
+	keptSetID := "set-kept"
+	removedSetID := "set-removed"
 	print := Item{
-		ID:     uuid.New(),
+		ID:     "card-print",
 		Kind:   KindCard,
 		Brand:  BrandYGO,
 		Lang:   LangEN,
@@ -220,7 +218,7 @@ func TestDeduplicateItemsRemapsSetReferences(t *testing.T) {
 }
 
 func TestNewCardPrintedUsesIdentityEdition(t *testing.T) {
-	setID := uuid.New()
+	setID := "set-printed"
 	item := NewCardPrinted(
 		baseItem(),
 		&setID,

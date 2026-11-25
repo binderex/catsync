@@ -5,8 +5,14 @@ PostgreSQL adapter for the denormalized catalog.
 ## Table
 
 - one `items` table for sets, cards, sleeves and playmats;
-- `domain.Item` is the only model;
+- `domain.Item` is the catalog entity; its JSON tags belong to the retrier
+  snapshot and it has no GORM tags;
+- `itemModel` is the GORM model for `items`; it owns the persistence types and
+  GORM tags;
 - no `item_infos` and no `user_id`.
+
+`domain.Item.ID` and `SetID` are strings. `itemModel` converts them to
+`uuid.UUID` and rejects invalid values before writing.
 
 Identity index:
 

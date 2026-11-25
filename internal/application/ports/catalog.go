@@ -3,8 +3,6 @@ package ports
 import (
 	"context"
 
-	"github.com/google/uuid"
-
 	"github.com/binderex/catsync/internal/domain"
 )
 
@@ -13,5 +11,5 @@ import (
 // regular cards.
 type CatalogRepository interface {
 	Upsert(ctx context.Context, items []domain.Item) error
-	Delete(ctx context.Context, ids []uuid.UUID) error
+	Delete(ctx context.Context, ids []string) error
 }

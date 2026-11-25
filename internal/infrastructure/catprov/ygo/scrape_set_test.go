@@ -5,8 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/binderex/catsync/internal/domain"
 )
 
@@ -154,8 +152,8 @@ func TestScrapeSet(t *testing.T) {
 	if enSet.Set.PropertyString(domain.PropertySetType) != "Collector's Set" || enSet.Set.PropertyString(domain.PropertySetCode) != "MAMS" {
 		t.Errorf("set properties = %+v", enSet.Set.Properties)
 	}
-	if enSet.Set.ID == uuid.Nil {
-		t.Error("set ID is nil")
+	if enSet.Set.ID == "" {
+		t.Error("set ID is empty")
 	}
 
 	if len(enSet.Prints) != 3 {

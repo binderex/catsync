@@ -11,7 +11,7 @@ import (
 
 type fakeCatalogRepository struct {
 	items   []domain.Item
-	deleted []uuid.UUID
+	deleted []string
 	calls   int
 }
 
@@ -21,7 +21,7 @@ func (r *fakeCatalogRepository) Upsert(_ context.Context, items []domain.Item) e
 	return nil
 }
 
-func (r *fakeCatalogRepository) Delete(_ context.Context, ids []uuid.UUID) error {
+func (r *fakeCatalogRepository) Delete(_ context.Context, ids []string) error {
 	r.deleted = append(r.deleted, ids...)
 	return nil
 }
@@ -39,7 +39,6 @@ func TestCatalogUpsertNormalizesItems(t *testing.T) {
 			Source: "https://example.com/sleeve",
 		},
 		{
-			ID:     uuid.Nil,
 			Kind:   domain.KindSet,
 			Brand:  domain.BrandYGO,
 			Lang:   domain.LangEN,
@@ -61,10 +60,10 @@ func TestCatalogUpsertNormalizesItems(t *testing.T) {
 	if len(repo.items) != 2 {
 		t.Fatalf("items = %d", len(repo.items))
 	}
-	if repo.items[0].ID == uuid.Nil {
+	if repo.items[0].ID == "" {
 		t.Error("sleeve id was not assigned")
 	}
-	if repo.items[1].ID == uuid.Nil {
+	if repo.items[1].ID == "" {
 		t.Error("set id was not assigned")
 	}
 	if repo.items[0].Properties == nil || repo.items[1].Properties == nil {
@@ -76,8 +75,8 @@ func TestCatalogUpsertRemovesDuplicatesBeforeUpsert(t *testing.T) {
 	repo := &fakeCatalogRepository{}
 	uc := NewCatalogUseCase(repo)
 
-	firstID := uuid.New()
-	secondID := uuid.New()
+	firstID := uuid.NewString()
+	secondID := uuid.NewString()
 	items := []domain.Item{
 		{
 			ID:     firstID,
@@ -249,8 +248,8 @@ func TestCatalogUpsertPrunesTokenOnlySets(t *testing.T) {
 	repo := &fakeCatalogRepository{}
 	uc := NewCatalogUseCase(repo)
 
-	tokenSetID := uuid.New()
-	normalSetID := uuid.New()
+	tokenSetID := uuid.NewString()
+	normalSetID := uuid.NewString()
 
 	items := []domain.Item{
 		{
@@ -263,7 +262,7 @@ func TestCatalogUpsertPrunesTokenOnlySets(t *testing.T) {
 			Source: "https://yugipedia.com/wiki/Satellite_Shop_Limited_Event_participation_cards",
 		},
 		{
-			ID:     uuid.New(),
+			ID:     uuid.NewString(),
 			Kind:   domain.KindCard,
 			Brand:  domain.BrandYGO,
 			Lang:   domain.LangJP,
@@ -285,7 +284,7 @@ func TestCatalogUpsertPrunesTokenOnlySets(t *testing.T) {
 			Source: "https://yugipedia.com/wiki/Legend_of_Blue_Eyes",
 		},
 		{
-			ID:     uuid.New(),
+			ID:     uuid.NewString(),
 			Kind:   domain.KindCard,
 			Brand:  domain.BrandYGO,
 			Lang:   domain.LangEN,
@@ -324,8 +323,8 @@ func TestCatalogUpsertDropsOrphanCards(t *testing.T) {
 	repo := &fakeCatalogRepository{}
 	uc := NewCatalogUseCase(repo)
 
-	setID := uuid.New()
-	missingSetID := uuid.New()
+	setID := uuid.NewString()
+	missingSetID := uuid.NewString()
 
 	items := []domain.Item{
 		{
@@ -338,7 +337,7 @@ func TestCatalogUpsertDropsOrphanCards(t *testing.T) {
 			Source: "https://yugipedia.com/wiki/Legend_of_Blue_Eyes",
 		},
 		{
-			ID:     uuid.New(),
+			ID:     uuid.NewString(),
 			Kind:   domain.KindCard,
 			Brand:  domain.BrandYGO,
 			Lang:   domain.LangEN,
@@ -351,7 +350,7 @@ func TestCatalogUpsertDropsOrphanCards(t *testing.T) {
 			},
 		},
 		{
-			ID:     uuid.New(),
+			ID:     uuid.NewString(),
 			Kind:   domain.KindCard,
 			Brand:  domain.BrandYGO,
 			Lang:   domain.LangEN,
