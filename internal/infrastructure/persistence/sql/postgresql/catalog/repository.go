@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -55,6 +56,10 @@ func NewRepository(db *gorm.DB) *Repository {
 // Upsert inserts or updates items by their unique identity. The use case must
 // normalize and deduplicate the items first; sets are written before prints so
 // their persisted IDs can be attached to the card rows.
+//
+// Each batch commits independently. A remote database can take minutes to write
+// the full catalog, and a single transaction would hide the progress and roll
+// everything back on a pooler timeout.
 func (r *Repository) Upsert(ctx context.Context, items []domain.Item) error {
 	if len(items) == 0 {
 		return nil
@@ -63,45 +68,43 @@ func (r *Repository) Upsert(ctx context.Context, items []domain.Item) error {
 	sets, others := splitSets(items)
 	brands := setBrands(sets)
 
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if len(sets) > 0 {
-			if err := upsertBatches(ctx, tx, sets); err != nil {
-				return fmt.Errorf("upsert sets: %w", err)
-			}
-
-			persisted, err := loadSetIDs(ctx, tx, brands)
-			if err != nil {
-				return err
-			}
-
-			idMap := make(map[uuid.UUID]uuid.UUID, len(sets))
-			for _, set := range sets {
-				id, ok := persisted[set.IdentityKey()]
-				if !ok {
-					return fmt.Errorf("persisted set %q was not found", set.Name)
-				}
-				idMap[set.ID] = id
-			}
-
-			for i := range others {
-				if others[i].SetID == nil {
-					continue
-				}
-				if id, ok := idMap[*others[i].SetID]; ok {
-					setID := id
-					others[i].SetID = &setID
-				}
-			}
+	if len(sets) > 0 {
+		if err := upsertBatches(ctx, r.db, sets); err != nil {
+			return fmt.Errorf("upsert sets: %w", err)
 		}
 
-		if len(others) > 0 {
-			if err := upsertBatches(ctx, tx, others); err != nil {
-				return fmt.Errorf("upsert items: %w", err)
-			}
+		persisted, err := loadSetIDs(ctx, r.db, brands)
+		if err != nil {
+			return err
 		}
 
-		return propagateSourceVerification(ctx, tx, items)
-	})
+		idMap := make(map[uuid.UUID]uuid.UUID, len(sets))
+		for _, set := range sets {
+			id, ok := persisted[set.IdentityKey()]
+			if !ok {
+				return fmt.Errorf("persisted set %q was not found", set.Name)
+			}
+			idMap[set.ID] = id
+		}
+
+		for i := range others {
+			if others[i].SetID == nil {
+				continue
+			}
+			if id, ok := idMap[*others[i].SetID]; ok {
+				setID := id
+				others[i].SetID = &setID
+			}
+		}
+	}
+
+	if len(others) > 0 {
+		if err := upsertBatches(ctx, r.db, others); err != nil {
+			return fmt.Errorf("upsert items: %w", err)
+		}
+	}
+
+	return propagateSourceVerification(ctx, r.db, items)
 }
 
 // Delete removes the given sets and any rows that still reference them.
@@ -174,6 +177,10 @@ func loadSetIDs(
 
 func upsertBatches(ctx context.Context, db *gorm.DB, items []domain.Item) error {
 	for start := 0; start < len(items); start += upsertBatchSize {
+		if start == 0 || start%10000 == 0 {
+			log.Printf("catalog: writing %d/%d rows", start, len(items))
+		}
+
 		end := min(start+upsertBatchSize, len(items))
 
 		batchCtx, cancel := context.WithTimeout(ctx, upsertBatchTimeout)
@@ -241,7 +248,7 @@ func propagateSourceVerification(
 			builder.WriteString("(?::text, ?::boolean)")
 			args = append(args, source, values[source])
 		}
-		builder.WriteString(`) AS v(source, verified) WHERE i.source = v.source`)
+		builder.WriteString(`) AS v(source, verified) WHERE i.source = v.source AND i.verified_source IS DISTINCT FROM v.verified`)
 
 		batchCtx, cancel := context.WithTimeout(ctx, upsertBatchTimeout)
 		err := db.WithContext(batchCtx).Exec(builder.String(), args...).Error

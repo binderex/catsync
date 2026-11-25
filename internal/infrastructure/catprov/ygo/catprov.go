@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -119,9 +120,11 @@ func (p *Provider) GetAllReleases(ctx context.Context, opts domain.ProviderOptio
 	}
 
 	if found && checkpoint.Complete {
+		log.Printf("ygo: using complete snapshot (%d sets)", len(checkpoint.Sets))
 		return checkpointItems(p, checkpoint, includeRushDuel)
 	}
 	if found && len(checkpoint.Releases) > 0 {
+		log.Printf("ygo: resuming partial snapshot (%d releases)", len(checkpoint.Releases))
 		scrape, stateErr := newReleaseScrapeFromCheckpoint(p, checkpoint)
 		if stateErr != nil {
 			return nil, stateErr
@@ -150,6 +153,7 @@ func (p *Provider) GetAllReleases(ctx context.Context, opts domain.ProviderOptio
 	if err != nil {
 		return nil, err
 	}
+	log.Printf("ygo: crawled %d releases", len(releases))
 
 	scrape, err := newReleaseScrape(p, releases)
 	if err != nil {

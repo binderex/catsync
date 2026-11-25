@@ -34,6 +34,13 @@ Additional constraints and cleanup:
 4. inserts/updates the remaining items;
 5. propagates `verified_source` to every row that shares a `source`.
 
+Every batch commits on its own. There is no transaction around the whole
+catalog: a remote database or a connection pooler can take minutes to write all
+the rows, and a single long transaction hides progress, holds locks and rolls
+everything back when it times out. With independent commits the rows become
+visible while the sync runs and a failure keeps the batches that already
+finished. The sync is idempotent, so rerunning it completes the rest.
+
 Only mutable columns are updated:
 
 ```text

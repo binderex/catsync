@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 
 	"github.com/binderex/catsync/internal/application/ports"
 	"github.com/binderex/catsync/internal/domain"
@@ -66,6 +67,7 @@ func (uc *CatalogProviderUseCase) run(
 	opts.Mode = mode
 
 	if uc.persistence != nil && opts.Resume {
+		log.Printf("%s: loading latest unfinished %s run", uc.provider.Name(), mode)
 		run, found, err := uc.persistence.LoadLatest(ctx, uc.provider.Name(), mode)
 		switch {
 		case errors.Is(err, domain.ErrPersistenceDisabled):
@@ -73,11 +75,15 @@ func (uc *CatalogProviderUseCase) run(
 		case err != nil:
 			return 0, fmt.Errorf("load latest retrier run: %w", err)
 		case found:
+			log.Printf("%s: resuming run %s", uc.provider.Name(), run.ID)
 			opts.ResumeState = &run
+		default:
+			log.Printf("%s: no unfinished run; starting fresh", uc.provider.Name())
 		}
 	}
 
 	items, fetchErr := fetch(ctx, opts)
+	log.Printf("%s: fetched %d items", uc.provider.Name(), len(items))
 
 	count := 0
 	var upsertErr error

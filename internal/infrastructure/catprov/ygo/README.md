@@ -138,10 +138,11 @@ images. Section IDs are not used because they can be duplicated.
 
 The provider returns a flat `[]domain.Item` (sets first, then prints). The
 `CatalogProviderUseCase` upserts everything through the PostgreSQL catalog
-repository in one operation. Rows are written in batches of 250, and each batch
-has its own timeout. A full catalog is larger than the old 15-minute persistence
-deadline, so persistence runs until it finishes or the process is interrupted
-with Ctrl+C. Persistence is idempotent; if it stops after writing some sets,
+repository in one operation. Rows are written in batches of 250, each batch
+commits independently and has its own timeout. A full catalog takes longer than
+a single database time window, so persistence runs until it finishes or the
+process is interrupted with Ctrl+C. Progress is logged every 10.000 rows.
+Persistence is idempotent; if it stops after writing some sets,
 running `go run ./cmd/sync -catprov ygo -mode all` reuses the provider snapshot
 stored in `data/retrier.json`, retries the pending pages and upserts the
 catalog again without re-scraping the completed pages.

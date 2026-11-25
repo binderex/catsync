@@ -71,6 +71,7 @@ func run() error {
 	}
 
 	retrierRepo := jsonstore.NewFile(retrierJSON)
+	log.Printf("%s: mode=%s resume=%v retrier=%s", provider, mode, resume, retrierRepo.Path())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -80,6 +81,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("connect to PostgreSQL: %w", err)
 	}
+	log.Printf("connected to PostgreSQL")
 	sqlDB, err := db.DB()
 	if err != nil {
 		return fmt.Errorf("get PostgreSQL connection: %w", err)
