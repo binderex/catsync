@@ -50,6 +50,11 @@ var (
 	// ErrMediawikiUnexpectedStatus is returned for an unexpected MediaWiki
 	// HTTP status.
 	ErrMediawikiUnexpectedStatus = errors.New("yugipedia mediawiki unexpected status")
+
+	// ErrCrawlIncomplete is returned when a crawl finishes with pending or
+	// unprocessed URLs. Incomplete results must stay in the retrier snapshot
+	// and never be upserted into the catalog.
+	ErrCrawlIncomplete = domain.ErrCrawlIncomplete
 )
 
 // Provider retrieves Yu-Gi-Oh! releases and builds catalog sets from them.
@@ -101,10 +106,10 @@ type Release struct {
 // their card prints as denormalized items. opts.Mediums filters the set index
 // (TCG, OCG or Rush Duel; Rush Duel is opt-in).
 //
-// When opts.Resume is false the previous checkpoint is discarded, unless the
-// caller passed an unfinished retrier run (opts.ResumeState) and a checkpoint
-// exists: in that case the crawl resumes automatically. The checkpoint is
-// written when the run finishes or its context is cancelled.
+// When opts.Resume is true and the caller passed an unfinished retrier run
+// (opts.ResumeState) with provider data, the crawl resumes automatically from
+// that checkpoint. When opts.Resume is false the previous state is discarded.
+// The checkpoint is written when the run finishes or its context is cancelled.
 func (p *Provider) GetAllReleases(ctx context.Context, opts domain.ProviderOptions) (items []domain.Item, err error) {
 	includeRushDuel := includesMedium(opts.Mediums, MediumRushDuel)
 
@@ -112,14 +117,31 @@ func (p *Provider) GetAllReleases(ctx context.Context, opts domain.ProviderOptio
 		checkpoint releasesCheckpoint
 		found      bool
 	)
-	if opts.Resume && opts.ResumeState != nil && len(opts.ResumeState.ProviderData) > 0 {
+	hasResumeRun := opts.Resume && opts.ResumeState != nil && opts.ResumeState.ID != ""
+
+	switch {
+	case opts.Resume && opts.ResumeState != nil && len(opts.ResumeState.ProviderData) > 0:
 		checkpoint, found, err = decodeReleasesCheckpoint(opts.ResumeState.ProviderData)
 		if err != nil {
 			return nil, err
 		}
+	case hasResumeRun:
+		// Without provider data there is nothing parsed to resume. Start a
+		// fresh crawl instead of silently returning an older complete
+		// snapshot while an unfinished run still has pending URLs.
+		log.Printf("ygo: unfinished run %s has no provider snapshot; starting fresh", opts.ResumeState.ID)
+	case opts.Resume && p.persistence != nil:
+		// A completed "all" run can be stored as success, which LoadLatest does
+		// not consider resumable. Fall back to the newest complete snapshot so
+		// "new" merges are reused without a full crawl.
+		_, checkpoint, found, err = p.loadLatestCompleteAllSnapshot(ctx)
+		if err != nil {
+			log.Printf("ygo: load latest complete all snapshot: %v", err)
+			found = false
+		}
 	}
 
-	if found && checkpoint.Complete {
+	if found && checkpoint.completeSnapshot() {
 		log.Printf("ygo: using complete snapshot (%d sets)", len(checkpoint.Sets))
 		return checkpointItems(p, checkpoint, includeRushDuel)
 	}
@@ -132,16 +154,20 @@ func (p *Provider) GetAllReleases(ctx context.Context, opts domain.ProviderOptio
 
 		runErr := scrape.run(ctx, opts)
 		items = supportedItems(scrape.items(), includeRushDuel)
-		saveErr := p.saveProviderData(
-			ctx,
-			opts.Mode,
-			scrape.snapshot(runErr == nil && ctx.Err() == nil && scrape.isComplete()),
-		)
-		if saveErr != nil {
-			return items, fmt.Errorf("save provider checkpoint: %w", saveErr)
+		complete := runErr == nil && ctx.Err() == nil && scrape.isComplete()
+		p.saveScrapeCheckpoint(ctx, opts.Mode, scrape, complete)
+
+		if runErr != nil {
+			return items, runErr
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return items, ctxErr
+		}
+		if !complete {
+			return items, ErrCrawlIncomplete
 		}
 
-		return items, runErr
+		return items, nil
 	}
 
 	mediums := opts.Mediums
@@ -162,17 +188,20 @@ func (p *Provider) GetAllReleases(ctx context.Context, opts domain.ProviderOptio
 
 	runErr := scrape.run(ctx, opts)
 	items = supportedItems(scrape.items(), includeRushDuel)
+	complete := runErr == nil && ctx.Err() == nil && scrape.isComplete()
 
-	saveErr := p.saveProviderData(
-		ctx,
-		opts.Mode,
-		scrape.snapshot(runErr == nil && ctx.Err() == nil && scrape.isComplete()),
-	)
-	if saveErr != nil {
-		return items, fmt.Errorf("save provider checkpoint: %w", saveErr)
+	p.saveScrapeCheckpoint(ctx, opts.Mode, scrape, complete)
+	if runErr != nil {
+		return items, runErr
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return items, ctxErr
+	}
+	if !complete {
+		return items, ErrCrawlIncomplete
 	}
 
-	return items, runErr
+	return items, nil
 }
 
 // saveProviderData stores the parsed crawl snapshot inside the active retrier
@@ -192,6 +221,23 @@ func (p *Provider) saveProviderData(
 	}
 
 	return p.persistence.SaveProviderData(ctx, p.Name(), mode, data)
+}
+
+// saveScrapeCheckpoint stores the complete/pending snapshot. A run with no
+// releases must not create an empty complete snapshot that would later hide
+// the real catalog from "all".
+func (p *Provider) saveScrapeCheckpoint(
+	ctx context.Context,
+	mode string,
+	scrape *releaseScrape,
+	complete bool,
+) {
+	if scrape == nil || len(scrape.releases) == 0 {
+		return
+	}
+	if err := p.saveProviderData(ctx, mode, scrape.snapshot(complete)); err != nil {
+		log.Printf("ygo: save provider checkpoint: %v", err)
+	}
 }
 
 func checkpointItems(provider *Provider, checkpoint releasesCheckpoint, includeRushDuel bool) ([]domain.Item, error) {
@@ -332,20 +378,75 @@ func normalizeMedium(medium string) (string, bool) {
 	}
 }
 
-// scrapeReleases is kept for callers that do not need checkpointing.
+// scrapeReleases scrapes the releases announced on the main page, resumes a
+// previous incomplete "new" run when available and merges a finished crawl
+// into the complete "all" snapshot.
 func (p *Provider) scrapeReleases(
 	ctx context.Context,
 	releases []Release,
 	opts domain.ProviderOptions,
 ) ([]domain.Item, error) {
-	scrape, err := newReleaseScrape(p, releases)
+	scrape, err := p.newReleasesScrape(releases, opts)
 	if err != nil {
 		return nil, err
 	}
 
+	log.Printf("ygo: scraping %d new releases", len(scrape.releases))
 	runErr := scrape.run(ctx, opts)
+	items := supportedItems(scrape.items(), includesMedium(opts.Mediums, MediumRushDuel))
+	complete := runErr == nil && ctx.Err() == nil && scrape.isComplete()
 
-	return supportedItems(scrape.items(), includesMedium(opts.Mediums, MediumRushDuel)), runErr
+	p.saveScrapeCheckpoint(ctx, opts.Mode, scrape, complete)
+
+	if runErr != nil {
+		return items, runErr
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return items, ctxErr
+	}
+	if !complete {
+		log.Printf("ygo: new scrape incomplete; snapshot and catalog skipped")
+		return items, ErrCrawlIncomplete
+	}
+
+	if err := p.updateCompleteAllSnapshot(ctx, scrape); err != nil {
+		// The catalog upsert can still proceed; the snapshot can be refreshed
+		// by a later complete crawl.
+		log.Printf("ygo: update all snapshot: %v", err)
+	}
+
+	return items, nil
+}
+
+// newReleasesScrape restores the previous "new" checkpoint, when any, and
+// merges the releases that the main page announces today. Releases that
+// disappeared from the page are kept because their pending URLs still belong to
+// the unfinished run.
+func (p *Provider) newReleasesScrape(
+	releases []Release,
+	opts domain.ProviderOptions,
+) (*releaseScrape, error) {
+	if opts.Resume && opts.ResumeState != nil && len(opts.ResumeState.ProviderData) > 0 {
+		checkpoint, found, err := decodeReleasesCheckpoint(opts.ResumeState.ProviderData)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			scrape, err := newReleaseScrapeFromCheckpoint(p, checkpoint)
+			if err != nil {
+				return nil, err
+			}
+			scrape.releases = groupReleases(mergeReleases(checkpoint.Releases, releases))
+			log.Printf(
+				"ygo: resuming new run %s with %d releases",
+				opts.ResumeState.ID,
+				len(scrape.releases),
+			)
+			return scrape, nil
+		}
+	}
+
+	return newReleaseScrape(p, releases)
 }
 
 // scrapeNewReleases extracts and filters the announced TCG, OCG and Rush Duel
@@ -463,5 +564,6 @@ func scrapeNewReleases(ctx context.Context) ([]Release, error) {
 		return releases[i].ReleaseAt.Before(releases[j].ReleaseAt)
 	})
 
+	log.Printf("ygo: found %d new releases", len(releases))
 	return releases, nil
 }

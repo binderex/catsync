@@ -222,13 +222,20 @@ func galleryItem(box *goquery.Selection) (galleryPrint, bool) {
 		return galleryPrint{}, false
 	}
 
+	// Official Proxy images are reference-only. They must never become catalog
+	// prints, even when the marker uses different capitalization or sits
+	// outside the paragraph that contains the links.
+	if strings.Contains(strings.ToLower(galleryText.Text()), "official proxy") {
+		return galleryPrint{}, false
+	}
+
 	paragraph := galleryText.Find("p")
 	if paragraph.Length() == 0 {
 		paragraph = galleryText
 	}
 
 	links := paragraph.Find("a")
-	if links.Length() == 0 || strings.Contains(paragraph.Text(), "Official Proxy") {
+	if links.Length() == 0 {
 		return galleryPrint{}, false
 	}
 
@@ -253,7 +260,7 @@ func galleryItem(box *goquery.Selection) (galleryPrint, bool) {
 			return
 		}
 
-		if title != "" && title != "Official Proxy" {
+		if title != "" && !strings.Contains(strings.ToLower(title), "official proxy") {
 			rarity = title
 			rarityCode = text
 		}

@@ -18,9 +18,9 @@ import (
 
 const fileDocumentVersion = 2
 
-// FileRepository stores every retrier run in one JSON document. The document
-// is small enough for the catalog sync and avoids the per-state writes of a
-// relational store.
+// FileRepository stores every retrier run in one JSON document. Provider
+// snapshots are kept in a sidecar file per run so the periodic URL-progress
+// saves never have to rewrite the full catalog snapshot.
 type FileRepository struct {
 	path string
 	mu   sync.Mutex
@@ -31,8 +31,8 @@ type fileDocument struct {
 	Runs    map[domain.RetrierRunID]domain.RetrierRun `json:"runs"`
 }
 
-// NewFile creates a single-file JSON repository. An empty path uses
-// "data/retrier.json".
+// NewFile creates a JSON repository with a main document and per-run provider
+// sidecars. An empty path uses "data/retrier.json".
 func NewFile(path string) *FileRepository {
 	if strings.TrimSpace(path) == "" {
 		path = filepath.Join("data", "retrier.json")
@@ -45,8 +45,9 @@ func (r *FileRepository) Path() string {
 	return r.path
 }
 
-// Save writes a run snapshot. changed is merged into run.States; the full
-// document is rewritten atomically because JSON has a single file.
+// Save writes a run snapshot. changed is merged into run.States; the main
+// document is rewritten atomically and a non-nil ProviderData rewrites the run
+// sidecar. A nil ProviderData keeps the existing sidecar.
 func (r *FileRepository) Save(ctx context.Context, run domain.RetrierRun, changed []domain.URLState) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -87,6 +88,17 @@ func (r *FileRepository) Save(ctx context.Context, run domain.RetrierRun, change
 	if err != nil {
 		return err
 	}
+	replacingProviderData := run.ProviderData != nil
+	if err := r.migrateProviderData(&document, run.ID, replacingProviderData); err != nil {
+		return err
+	}
+
+	if replacingProviderData {
+		if err := r.writeProviderData(run.ID, run.ProviderData); err != nil {
+			return err
+		}
+	}
+	run.ProviderData = nil
 	document.Runs[run.ID] = run
 
 	return r.write(document)
@@ -98,6 +110,9 @@ func (r *FileRepository) Replace(ctx context.Context, runs []domain.RetrierRun) 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
 	document := fileDocument{
 		Version: fileDocumentVersion,
@@ -117,13 +132,21 @@ func (r *FileRepository) Replace(ctx context.Context, runs []domain.RetrierRun) 
 		if run.UpdatedAt.IsZero() {
 			run.UpdatedAt = time.Now().UTC()
 		}
+		if run.ProviderData != nil {
+			if err := r.writeProviderData(run.ID, run.ProviderData); err != nil {
+				return err
+			}
+			run.ProviderData = nil
+		} else if err := r.removeProviderData(run.ID); err != nil {
+			return err
+		}
 		document.Runs[run.ID] = run
 	}
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	return r.write(document)
+	if err := r.write(document); err != nil {
+		return err
+	}
+	return r.purgeProviderData(document.Runs)
 }
 
 // Load reads a run by id.
@@ -143,6 +166,15 @@ func (r *FileRepository) Load(ctx context.Context, id domain.RetrierRunID) (doma
 	run, ok := document.Runs[id]
 	if !ok {
 		return domain.RetrierRun{}, fmt.Errorf("%w: %s", domain.ErrRunNotFound, id)
+	}
+	if len(run.ProviderData) == 0 {
+		data, err := r.readProviderData(id)
+		if err != nil {
+			return domain.RetrierRun{}, err
+		}
+		if data != nil {
+			run.ProviderData = data
+		}
 	}
 	return run, nil
 }
@@ -230,7 +262,118 @@ func (r *FileRepository) Delete(ctx context.Context, id domain.RetrierRunID) err
 	}
 	delete(document.Runs, id)
 
-	return r.write(document)
+	if err := r.write(document); err != nil {
+		return err
+	}
+	return r.removeProviderData(id)
+}
+
+func (r *FileRepository) providerDataDir() string {
+	return r.path + ".d"
+}
+
+func (r *FileRepository) providerDataPath(id domain.RetrierRunID) string {
+	return filepath.Join(r.providerDataDir(), providerDataFileName(id))
+}
+
+var providerDataNameReplacer = strings.NewReplacer(
+	"/", "_",
+	"\\", "_",
+	":", "_",
+	"..", "_",
+)
+
+func providerDataFileName(id domain.RetrierRunID) string {
+	return providerDataNameReplacer.Replace(string(id)) + ".json"
+}
+
+func (r *FileRepository) writeProviderData(id domain.RetrierRunID, data []byte) error {
+	if len(data) == 0 {
+		return r.removeProviderData(id)
+	}
+	if err := writeAtomic(r.providerDataPath(id), data); err != nil {
+		return fmt.Errorf("write retrier provider data: %w", err)
+	}
+	return nil
+}
+
+func (r *FileRepository) readProviderData(id domain.RetrierRunID) ([]byte, error) {
+	data, err := os.ReadFile(r.providerDataPath(id))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read retrier provider data: %w", err)
+	}
+	return data, nil
+}
+
+func (r *FileRepository) removeProviderData(id domain.RetrierRunID) error {
+	if err := os.Remove(r.providerDataPath(id)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove retrier provider data: %w", err)
+	}
+	return nil
+}
+
+// migrateProviderData moves provider snapshots that an older document stored
+// inline into their sidecar files. It runs only when the document is about to
+// be rewritten, so a single migration happens on the first save. When the
+// incoming run already carries a replacement snapshot, its old inline value is
+// dropped instead of being written twice.
+func (r *FileRepository) migrateProviderData(
+	document *fileDocument,
+	replacementID domain.RetrierRunID,
+	hasReplacement bool,
+) error {
+	for id, run := range document.Runs {
+		if len(run.ProviderData) == 0 {
+			continue
+		}
+
+		if hasReplacement && id == replacementID {
+			run.ProviderData = nil
+			document.Runs[id] = run
+			continue
+		}
+
+		path := r.providerDataPath(id)
+		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+			if err := r.writeProviderData(id, run.ProviderData); err != nil {
+				return err
+			}
+		} else if err != nil {
+			return fmt.Errorf("stat retrier provider data: %w", err)
+		}
+
+		run.ProviderData = nil
+		document.Runs[id] = run
+	}
+	return nil
+}
+
+func (r *FileRepository) purgeProviderData(runs map[domain.RetrierRunID]domain.RetrierRun) error {
+	entries, err := os.ReadDir(r.providerDataDir())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read retrier provider data directory: %w", err)
+	}
+
+	keep := make(map[string]bool, len(runs))
+	for id := range runs {
+		keep[providerDataFileName(id)] = true
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || keep[entry.Name()] {
+			continue
+		}
+		if err := os.Remove(filepath.Join(r.providerDataDir(), entry.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove stale retrier provider data: %w", err)
+		}
+	}
+	return nil
 }
 
 func (r *FileRepository) read() (fileDocument, error) {

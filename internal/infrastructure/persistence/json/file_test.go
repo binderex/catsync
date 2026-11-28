@@ -2,6 +2,8 @@ package jsonstore
 
 import (
 	"context"
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -113,8 +115,116 @@ func TestFileRepositoryReplace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if !strings.Contains(string(run.ProviderData), `"complete": true`) {
+	if !strings.Contains(string(run.ProviderData), `"complete":true`) {
 		t.Errorf("provider data = %s", run.ProviderData)
+	}
+}
+
+func TestFileRepositoryKeepsProviderDataInSidecar(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "retrier.json")
+	repo := NewFile(path)
+	ctx := context.Background()
+
+	run := domain.RetrierRun{
+		ID:           "run-1",
+		Provider:     "ygo",
+		Mode:         "all",
+		State:        domain.RetrierRunRunning,
+		ProviderData: []byte(`{"sets":1}`),
+	}
+	if err := repo.Save(ctx, run, nil); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	document, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read document: %v", err)
+	}
+	if strings.Contains(string(document), `"provider_data"`) {
+		t.Fatalf("provider data was stored inline: %s", document)
+	}
+
+	// A state-only save with a nil snapshot must keep the stored snapshot and
+	// must not write it into the document.
+	run.ProviderData = nil
+	run.States = map[string]domain.URLState{"http://a": {URL: "http://a", Completed: true}}
+	if err := repo.Save(ctx, run, nil); err != nil {
+		t.Fatalf("Save state: %v", err)
+	}
+
+	document, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read document: %v", err)
+	}
+	if strings.Contains(string(document), `"provider_data"`) {
+		t.Fatalf("provider data was stored inline: %s", document)
+	}
+
+	loaded, err := repo.Load(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if string(loaded.ProviderData) != `{"sets":1}` {
+		t.Fatalf("provider data = %s", loaded.ProviderData)
+	}
+	if !loaded.States["http://a"].Completed {
+		t.Fatalf("states = %+v", loaded.States)
+	}
+
+	if err := repo.Delete(ctx, "run-1"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := os.Stat(repo.providerDataPath("run-1")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("provider sidecar still exists: %v", err)
+	}
+}
+
+func TestFileRepositoryMigratesInlineProviderData(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "retrier.json")
+	legacy := `{
+  "version": 2,
+  "runs": {
+    "legacy": {
+      "version": 2,
+      "run_id": "legacy",
+      "provider": "ygo",
+      "mode": "all",
+      "state": "success",
+      "provider_data": {"sets": 1}
+    }
+  }
+}`
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+		t.Fatalf("write legacy document: %v", err)
+	}
+
+	repo := NewFile(path)
+	ctx := context.Background()
+	if err := repo.Save(ctx, domain.RetrierRun{
+		ID:       "other",
+		Provider: "ygo",
+		Mode:     "new",
+		State:    domain.RetrierRunRunning,
+	}, nil); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	document, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read document: %v", err)
+	}
+	if strings.Contains(string(document), `"provider_data"`) {
+		t.Fatalf("inline provider data was not migrated: %s", document)
+	}
+
+	loaded, err := repo.Load(ctx, "legacy")
+	if err != nil {
+		t.Fatalf("Load legacy: %v", err)
+	}
+	if !strings.Contains(string(loaded.ProviderData), `"sets": 1`) {
+		t.Fatalf("legacy provider data = %s", loaded.ProviderData)
 	}
 }
 

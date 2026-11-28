@@ -51,8 +51,6 @@ type RetrierPersistenceUseCase struct {
 	order  []string
 	dirty  map[string]domain.URLState
 
-	providerData json.RawMessage
-
 	lastSave time.Time
 }
 
@@ -86,14 +84,6 @@ func (uc *RetrierPersistenceUseCase) RunStarted(
 		return "", domain.ErrPersistenceDisabled
 	}
 
-	// Resuming a run keeps the provider snapshot already stored with it.
-	var existingProviderData json.RawMessage
-	if run.ID != "" {
-		if existing, err := uc.repo.Load(ctx, run.ID); err == nil {
-			existingProviderData = existing.ProviderData
-		}
-	}
-
 	uc.mu.Lock()
 
 	if run.ID == "" {
@@ -101,11 +91,6 @@ func (uc *RetrierPersistenceUseCase) RunStarted(
 	}
 	if run.StartedAt.IsZero() {
 		run.StartedAt = time.Now().UTC()
-	}
-	if len(run.ProviderData) > 0 {
-		uc.providerData = run.ProviderData
-	} else if existingProviderData != nil {
-		uc.providerData = existingProviderData
 	}
 
 	uc.runID = run.ID
@@ -195,10 +180,7 @@ func (uc *RetrierPersistenceUseCase) RunFinished(
 	uc.states = copyStates(run.States)
 	uc.order = copyOrder(run.Order, run.States)
 	uc.dirty = make(map[string]domain.URLState)
-	providerData := uc.providerData
 	uc.mu.Unlock()
-
-	run.ProviderData = providerData
 
 	if run.UpdatedAt.IsZero() {
 		run.UpdatedAt = time.Now().UTC()
@@ -251,7 +233,6 @@ func (uc *RetrierPersistenceUseCase) SaveProviderData(
 	defer cancel()
 
 	uc.mu.Lock()
-	uc.providerData = data
 	runID := uc.runID
 	uc.mu.Unlock()
 
@@ -377,7 +358,10 @@ func (uc *RetrierPersistenceUseCase) Delete(ctx context.Context, id domain.Retri
 
 func resumableState(state domain.RetrierRunState) bool {
 	switch state {
-	case domain.RetrierRunRunning, domain.RetrierRunCancelled, domain.RetrierRunInterrupted:
+	case domain.RetrierRunRunning,
+		domain.RetrierRunCancelled,
+		domain.RetrierRunInterrupted,
+		domain.RetrierRunFailed:
 		return true
 	default:
 		return false
@@ -418,20 +402,19 @@ func (uc *RetrierPersistenceUseCase) buildRunLocked(
 	}
 
 	return domain.RetrierRun{
-		Version:      2,
-		ID:           uc.runID,
-		Provider:     uc.provider,
-		Mode:         uc.mode,
-		State:        state,
-		StartedAt:    uc.startedAt,
-		UpdatedAt:    updated,
-		FinishedAt:   finishedAt,
-		Error:        errMsg,
-		Progress:     progress,
-		Order:        append([]string(nil), uc.order...),
-		States:       copyStates(uc.states),
-		Failures:     domain.FailuresFromStates(uc.states),
-		ProviderData: uc.providerData,
+		Version:    2,
+		ID:         uc.runID,
+		Provider:   uc.provider,
+		Mode:       uc.mode,
+		State:      state,
+		StartedAt:  uc.startedAt,
+		UpdatedAt:  updated,
+		FinishedAt: finishedAt,
+		Error:      errMsg,
+		Progress:   progress,
+		Order:      append([]string(nil), uc.order...),
+		States:     copyStates(uc.states),
+		Failures:   domain.FailuresFromStates(uc.states),
 	}
 }
 

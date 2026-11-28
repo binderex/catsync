@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"unicode"
@@ -79,6 +80,7 @@ func (p *Provider) getSleeves(ctx context.Context, opts domain.ProviderOptions) 
 	browserOptions := []retrier.Option{
 		retrier.WithProvider("dragonshield"),
 		retrier.WithMode(opts.Mode),
+		retrier.WithPresenter(retrier.NewConsolePresenter(os.Stdout)),
 	}
 	if opts.ResumeState != nil {
 		browserOptions = append(browserOptions, retrier.WithRunID(opts.ResumeState.ID))

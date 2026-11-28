@@ -57,9 +57,6 @@ func run() error {
 		return fmt.Errorf("invalid -mode %q: use new or all", mode)
 	}
 
-	// The parent .env holds the local PostgreSQL settings; the project .env
-	// holds the catsync overrides. godotenv does not override existing values.
-	_ = godotenv.Load(filepath.Join("..", ".env"))
 	_ = godotenv.Load()
 
 	if strings.TrimSpace(retrierJSON) == "" {
@@ -122,7 +119,7 @@ func run() error {
 
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			log.Printf("%s: interrupted after upserting %d items", provider, count)
+			log.Printf("%s: interrupted; progress kept in retrier persistence", provider)
 			return nil
 		}
 		return fmt.Errorf("%s %s: %w", provider, mode, err)

@@ -15,9 +15,10 @@ go run ./cmd/recover -output data/retrier.json
   `postgres://binderex:binderex@localhost:5433/binderex?sslmode=disable`.
 - The `items` table populated with global rows (`store_id IS NULL`).
 
-The command writes an `interrupted` YGO `all` run with `provider_data` set, so
-a later `go run ./cmd/sync -catprov ygo -mode all` reuses the snapshot without
-scraping.
+The command writes an `interrupted` YGO `all` run with its provider snapshot
+set, so a later `go run ./cmd/sync -catprov ygo -mode all` reuses it without
+scraping. The snapshot is stored in the sidecar directory next to the retrier
+document (`data/retrier.json.d/` by default).
 
 ## Notes
 

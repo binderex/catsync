@@ -174,6 +174,13 @@ func scrapeSetCards(
 // domain items. Sets come first so the persistence repository can resolve
 // their IDs before writing prints.
 func materializeItems(states []*setState) []domain.Item {
+	return materializeCompleteItems(states, nil)
+}
+
+// materializeCompleteItems flattens the sets and the prints that are not in
+// pending. Prints from an unfinished card or gallery page are resume state and
+// must never be treated as scraped catalog rows.
+func materializeCompleteItems(states []*setState, pending map[*domain.Item]bool) []domain.Item {
 	items := make([]domain.Item, 0, len(states))
 	for _, state := range states {
 		if state == nil || state.Set == nil {
@@ -182,7 +189,7 @@ func materializeItems(states []*setState) []domain.Item {
 
 		items = append(items, *state.Set)
 		for _, print := range state.Prints {
-			if print == nil {
+			if print == nil || pending[print] {
 				continue
 			}
 			applyPrintImageFallback(print, state.Set)

@@ -3,6 +3,7 @@ package ygo
 import (
 	"context"
 	"log"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -35,6 +36,11 @@ type releaseScrape struct {
 
 	listPageTargets map[string]*setListPage
 
+	// pending holds the prints whose card page or gallery is not complete yet.
+	// They live in the set state while the crawl runs, but the snapshot only
+	// stores them as pending resume data.
+	pending map[*domain.Item]bool
+
 	processed map[string]bool
 	pages     map[string]domain.URLState
 
@@ -62,20 +68,25 @@ func newEmptyReleaseScrape(provider *Provider, releases []Release) *releaseScrap
 		cardResults:     make(map[string]cardScrapeResult),
 		galleryResults:  make(map[string][]gallerySection),
 		listPageTargets: make(map[string]*setListPage),
+		pending:         make(map[*domain.Item]bool),
 		processed:       make(map[string]bool),
 		pages:           make(map[string]domain.URLState),
 	}
 }
 
 func (s *releaseScrape) items() []domain.Item {
-	return materializeItems(s.states)
+	s.mu.Lock()
+	pending := s.pendingSetLocked()
+	s.mu.Unlock()
+
+	return materializeCompleteItems(s.states, pending)
 }
 
 func (s *releaseScrape) isComplete() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if len(s.printsByCard) > 0 || len(s.galleryRefs) > 0 {
+	if len(s.printsByCard) > 0 || len(s.galleryRefs) > 0 || len(s.pending) > 0 {
 		return false
 	}
 
@@ -101,8 +112,12 @@ func (s *releaseScrape) run(ctx context.Context, opts domain.ProviderOptions) er
 
 	// Loading the full YGOPRODeck catalog once avoids one request per card.
 	// A failure is not fatal: card pages are used as the fallback source.
-	if _, err := s.provider.ygoproCatalog(ctx); err != nil {
-		log.Printf("load ygoprodeck catalog: %v", err)
+	log.Printf("ygo: loading ygoprodeck catalog")
+	cards, err := s.provider.ygoproCatalog(ctx)
+	if err != nil {
+		log.Printf("ygo: load ygoprodeck catalog: %v", err)
+	} else {
+		log.Printf("ygo: loaded %d ygoprodeck cards", len(cards))
 	}
 
 	collector := colly.NewCollector(
@@ -114,6 +129,7 @@ func (s *releaseScrape) run(ctx context.Context, opts domain.ProviderOptions) er
 	queueOptions := []retrier.Option{
 		retrier.WithProvider("ygo"),
 		retrier.WithMode(opts.Mode),
+		retrier.WithPresenter(retrier.NewConsolePresenter(os.Stdout)),
 	}
 	if opts.ResumeState != nil {
 		queueOptions = append(queueOptions, retrier.WithRunID(opts.ResumeState.ID))
@@ -156,11 +172,18 @@ func (s *releaseScrape) run(ctx context.Context, opts domain.ProviderOptions) er
 				return
 			}
 
+			referenced := referencedPrints(printsByURL)
+
 			s.mu.Lock()
 			s.states = append(s.states, setStates...)
 			for _, state := range setStates {
 				for _, print := range state.Prints {
 					s.stateByPrint[print] = state
+					if referenced[print] {
+						s.markPendingLocked(print)
+					} else {
+						s.markCompleteLocked(print)
+					}
 				}
 			}
 			for _, listPage := range listPages {
@@ -184,16 +207,31 @@ func (s *releaseScrape) run(ctx context.Context, opts domain.ProviderOptions) er
 
 		case s.listPage(pageKey) != nil:
 			target := s.listPage(pageKey)
+
+			s.mu.Lock()
+			startLengths := make(map[*setState]int, len(target.States))
+			for _, state := range target.States {
+				startLengths[state] = len(state.Prints)
+			}
+			s.mu.Unlock()
+
 			printsByURL, err := scrapeSetListPage(pageURL, body, target)
 			if err != nil {
 				log.Printf("set list page %s: %v", pageURL, err)
 				return
 			}
 
+			referenced := referencedPrints(printsByURL)
+
 			s.mu.Lock()
 			for _, state := range target.States {
-				for _, print := range state.Prints {
+				for _, print := range state.Prints[startLengths[state]:] {
 					s.stateByPrint[print] = state
+					if referenced[print] {
+						s.markPendingLocked(print)
+					} else {
+						s.markCompleteLocked(print)
+					}
 				}
 			}
 			s.processed[pageKey] = true
@@ -233,14 +271,7 @@ func (s *releaseScrape) run(ctx context.Context, opts domain.ProviderOptions) er
 			s.cardResults[pageKey] = result
 			refs := s.printsByCard[pageKey]
 			delete(s.printsByCard, pageKey)
-			s.applyCardLocked(result, refs)
-			if result.GalleryURL != "" {
-				galleryKey := canonicalPageURL(result.GalleryURL)
-				s.galleryRefs[galleryKey] = append(s.galleryRefs[galleryKey], refs...)
-				if gallery, ok := s.galleryResults[galleryKey]; ok {
-					s.applyGalleryLocked(gallery, refs)
-				}
-			}
+			s.applyCardResultLocked(result, refs)
 			s.processed[pageKey] = true
 			s.mu.Unlock()
 
@@ -280,31 +311,39 @@ func (s *releaseScrape) run(ctx context.Context, opts domain.ProviderOptions) er
 		}
 	}
 
+	restoredURLs := make(map[string]bool)
 	if opts.ResumeState != nil && s.resumable {
-		queue.Restore(opts.ResumeState.States, opts.ResumeState.Order, resolveFilter)
-	} else {
-		for _, release := range releases {
-			if !s.isProcessed(canonicalPageURL(release.URL)) {
-				queue.Add(release.URL, setFilter)
+		queue.Restore(s.resumeStates(opts.ResumeState), opts.ResumeState.Order, resolveFilter)
+		for rawURL := range opts.ResumeState.States {
+			restoredURLs[canonicalPageURL(rawURL)] = true
+		}
+	}
+
+	// Always add the URLs that are still unprocessed. restoredURLs uses the
+	// canonical page key so a resumed run is not queued twice when the stored
+	// URL and the current href encode the title differently.
+	for _, release := range releases {
+		key := canonicalPageURL(release.URL)
+		if !s.isProcessed(key) && !restoredURLs[key] {
+			queue.Add(release.URL, setFilter)
+		}
+	}
+	for key, target := range listPages {
+		if !s.isProcessed(key) && !restoredURLs[key] {
+			queue.Add(target.URL, setFilter)
+		}
+	}
+	for _, key := range cardURLs {
+		if !s.isProcessed(key) && !restoredURLs[key] {
+			if _, cached := s.cardResult(key); !cached {
+				queue.Add(key, cardFilter)
 			}
 		}
-		for key, target := range listPages {
-			if !s.isProcessed(key) {
-				queue.Add(target.URL, setFilter)
-			}
-		}
-		for _, key := range cardURLs {
-			if !s.isProcessed(key) {
-				if _, cached := s.cardResult(key); !cached {
-					queue.Add(key, cardFilter)
-				}
-			}
-		}
-		for _, key := range galleryURLs {
-			if !s.isProcessed(key) {
-				if _, cached := s.galleryResult(key); !cached {
-					queue.Add(key, galleryFilter)
-				}
+	}
+	for _, key := range galleryURLs {
+		if !s.isProcessed(key) && !restoredURLs[key] {
+			if _, cached := s.galleryResult(key); !cached {
+				queue.Add(key, galleryFilter)
 			}
 		}
 	}
@@ -312,8 +351,10 @@ func (s *releaseScrape) run(ctx context.Context, opts domain.ProviderOptions) er
 	runErr := queue.Run(ctx)
 
 	states := queue.States()
+	log.Printf("ygo: crawl finished with %d URLs", len(states))
 	s.mu.Lock()
 	s.pages = states
+	s.resolveTerminalPagesLocked()
 	s.mu.Unlock()
 
 	logScrapeSummary(states, setURLs)
@@ -476,19 +517,8 @@ func (s *releaseScrape) reconcileCachedResultsLocked() {
 			continue
 		}
 
-		s.applyCardLocked(result, refs)
 		delete(s.printsByCard, cardURL)
-
-		if result.GalleryURL == "" {
-			continue
-		}
-
-		galleryKey := canonicalPageURL(result.GalleryURL)
-		if gallery, ok := s.galleryResults[galleryKey]; ok {
-			s.applyGalleryLocked(gallery, refs)
-			continue
-		}
-		s.galleryRefs[galleryKey] = append(s.galleryRefs[galleryKey], refs...)
+		s.applyCardResultLocked(result, refs)
 	}
 
 	for galleryURL, refs := range s.galleryRefs {
@@ -507,11 +537,24 @@ func (s *releaseScrape) registerCardRefsLocked(cardURLKey string, refs []*domain
 	result, processed := s.cardResults[cardURLKey]
 	if !processed {
 		s.printsByCard[cardURLKey] = append(s.printsByCard[cardURLKey], refs...)
+		s.markPendingLocked(refs...)
 		return
 	}
 
+	s.applyCardResultLocked(result, refs)
+}
+
+// applyCardResultLocked enriches refs with a parsed card page and decides
+// whether their gallery data is still missing. A print is complete as soon as
+// its card page (and its gallery, when the page links one) has been parsed.
+func (s *releaseScrape) applyCardResultLocked(result cardScrapeResult, refs []*domain.Item) {
 	s.applyCardLocked(result, refs)
+	if len(refs) == 0 {
+		return
+	}
+
 	if result.GalleryURL == "" {
+		s.markCompleteLocked(refs...)
 		return
 	}
 
@@ -520,7 +563,9 @@ func (s *releaseScrape) registerCardRefsLocked(cardURLKey string, refs []*domain
 		s.applyGalleryLocked(gallery, refs)
 		return
 	}
+
 	s.galleryRefs[galleryKey] = append(s.galleryRefs[galleryKey], refs...)
+	s.markPendingLocked(refs...)
 }
 
 func (s *releaseScrape) applyCardLocked(result cardScrapeResult, refs []*domain.Item) {
@@ -561,6 +606,7 @@ func (s *releaseScrape) applyGalleryLocked(gallery []gallerySection, refs []*dom
 			continue
 		}
 		applyGalleryPrint(print, gallery)
+		s.markCompleteLocked(print)
 
 		state := s.stateByPrint[print]
 		if state == nil {
@@ -621,4 +667,150 @@ func (s *releaseScrape) galleryResult(key string) ([]gallerySection, bool) {
 	defer s.mu.Unlock()
 	result, ok := s.galleryResults[key]
 	return result, ok
+}
+
+func referencedPrints(byURL map[string][]*domain.Item) map[*domain.Item]bool {
+	referenced := make(map[*domain.Item]bool)
+	for _, refs := range byURL {
+		for _, print := range refs {
+			if print != nil {
+				referenced[print] = true
+			}
+		}
+	}
+	return referenced
+}
+
+// pendingSetLocked returns every print that cannot be part of the completed
+// snapshot yet. It combines the explicit pending marks with the card/gallery
+// queues so a print referenced by a retry is never stored as complete.
+func (s *releaseScrape) pendingSetLocked() map[*domain.Item]bool {
+	pending := make(map[*domain.Item]bool, len(s.pending))
+	for print := range s.pending {
+		if print != nil {
+			pending[print] = true
+		}
+	}
+	for _, refs := range s.printsByCard {
+		for _, print := range refs {
+			if print != nil {
+				pending[print] = true
+			}
+		}
+	}
+	for _, refs := range s.galleryRefs {
+		for _, print := range refs {
+			if print != nil {
+				pending[print] = true
+			}
+		}
+	}
+	return pending
+}
+
+func (s *releaseScrape) markPendingLocked(prints ...*domain.Item) {
+	for _, print := range prints {
+		if print != nil {
+			s.pending[print] = true
+		}
+	}
+}
+
+func (s *releaseScrape) markCompleteLocked(prints ...*domain.Item) {
+	for _, print := range prints {
+		if print != nil {
+			delete(s.pending, print)
+		}
+	}
+}
+
+func (s *releaseScrape) hasParsedLocked(key string) bool {
+	if s.processed[key] {
+		return true
+	}
+	if _, ok := s.cardResults[key]; ok {
+		return true
+	}
+	_, ok := s.galleryResults[key]
+	return ok
+}
+
+// resumeStates rebuilds the retrier queue from a persisted run. Completed
+// pages without their parsed result (for example after a crash between the
+// periodic URL save and the provider snapshot) and failed pages are retried
+// instead of being skipped. Not-found and invalid pages stay terminal because
+// there is no data to parse.
+func (s *releaseScrape) resumeStates(run *domain.RetrierRun) map[string]domain.URLState {
+	if run == nil {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	states := make(map[string]domain.URLState, len(run.States))
+	for rawURL, state := range run.States {
+		state.URL = rawURL
+		key := canonicalPageURL(rawURL)
+
+		if state.Terminal() && !s.hasParsedLocked(key) {
+			switch {
+			case state.NotFound, state.Invalid:
+				// Keep the terminal state: the page has no parseable data.
+			default:
+				// Retry completed-without-result and failed pages.
+				state = domain.URLState{URL: rawURL}
+			}
+		}
+		states[rawURL] = state
+	}
+
+	return states
+}
+
+// resolveTerminalPagesLocked unblocks pages that do not exist. A not-found or
+// filtered page cannot add data, so its prints are complete with the data that
+// the set list already provided. Failed pages remain pending and are retried.
+func (s *releaseScrape) resolveTerminalPagesLocked() {
+	pages := make(map[string]domain.URLState, len(s.pages))
+	for rawURL, state := range s.pages {
+		pages[canonicalPageURL(rawURL)] = state
+	}
+
+	for key, refs := range s.printsByCard {
+		state, ok := pages[key]
+		if !ok || (!state.NotFound && !state.Invalid) {
+			continue
+		}
+		delete(s.printsByCard, key)
+		s.markCompleteLocked(refs...)
+	}
+
+	for key, refs := range s.galleryRefs {
+		state, ok := pages[key]
+		if !ok || (!state.NotFound && !state.Invalid) {
+			continue
+		}
+		delete(s.galleryRefs, key)
+		s.markCompleteLocked(refs...)
+	}
+
+	for _, release := range s.releases {
+		key := canonicalPageURL(release.URL)
+		if s.processed[key] {
+			continue
+		}
+		if state, ok := pages[key]; ok && (state.NotFound || state.Invalid) {
+			s.processed[key] = true
+		}
+	}
+
+	for key := range s.listPageTargets {
+		if s.processed[key] {
+			continue
+		}
+		if state, ok := pages[key]; ok && (state.NotFound || state.Invalid) {
+			s.processed[key] = true
+		}
+	}
 }

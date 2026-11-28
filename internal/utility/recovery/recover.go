@@ -12,7 +12,7 @@ import (
 	jsonstore "github.com/binderex/catsync/internal/infrastructure/persistence/json"
 )
 
-const snapshotVersion = 1
+const snapshotVersion = 2
 
 // ItemSource loads catalog items for the snapshot.
 type ItemSource interface {

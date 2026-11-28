@@ -3,11 +3,13 @@ package usecases
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/binderex/catsync/internal/domain"
+	jsonstore "github.com/binderex/catsync/internal/infrastructure/persistence/json"
 )
 
 type fakeRunRepository struct {
@@ -28,6 +30,11 @@ func (r *fakeRunRepository) Save(_ context.Context, run domain.RetrierRun, chang
 	copied.States = copyStates(run.States)
 	for _, state := range changed {
 		copied.States[state.URL] = state
+	}
+	if run.ProviderData == nil {
+		if existing, ok := r.runs[run.ID]; ok {
+			copied.ProviderData = existing.ProviderData
+		}
 	}
 	r.runs[run.ID] = copied
 	r.saves = append(r.saves, copied)
@@ -327,6 +334,58 @@ func TestPersistenceSavesProviderDataAndKeepsItOnResume(t *testing.T) {
 	}
 	if string(repo.stored(id).ProviderData) != string(data) {
 		t.Fatal("provider data was lost on resume")
+	}
+}
+
+func TestPersistenceKeepsProviderDataAcrossRunLifecycle(t *testing.T) {
+	repo := jsonstore.NewFile(filepath.Join(t.TempDir(), "retrier.json"))
+	uc := NewRetrierPersistenceUseCase(repo, WithSaveInterval(0))
+	ctx := context.Background()
+
+	id, err := uc.RunStarted(ctx, domain.RetrierRun{
+		Provider: "ygo",
+		Mode:     "new",
+		States: map[string]domain.URLState{
+			"http://a": {URL: "http://a"},
+		},
+		Order: []string{"http://a"},
+	})
+	if err != nil {
+		t.Fatalf("RunStarted: %v", err)
+	}
+
+	data := json.RawMessage(`{"sets":1}`)
+	if err := uc.SaveProviderData(ctx, "ygo", "new", data); err != nil {
+		t.Fatalf("SaveProviderData: %v", err)
+	}
+
+	finished := time.Now().UTC()
+	if err := uc.RunFinished(ctx, domain.RetrierRun{
+		Version:    2,
+		ID:         id,
+		Provider:   "ygo",
+		Mode:       "new",
+		State:      domain.RetrierRunCancelled,
+		StartedAt:  finished.Add(-time.Minute),
+		UpdatedAt:  finished,
+		FinishedAt: &finished,
+		States: map[string]domain.URLState{
+			"http://a": {URL: "http://a", Completed: true},
+		},
+		Order: []string{"http://a"},
+	}); err != nil {
+		t.Fatalf("RunFinished: %v", err)
+	}
+
+	loaded, err := uc.Load(ctx, id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if string(loaded.ProviderData) != string(data) {
+		t.Fatalf("provider data = %s, want %s", loaded.ProviderData, data)
+	}
+	if !loaded.States["http://a"].Completed {
+		t.Fatalf("states = %+v", loaded.States)
 	}
 }
 

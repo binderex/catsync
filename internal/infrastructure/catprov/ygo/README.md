@@ -25,14 +25,25 @@ func (p *Provider) GetNewReleases(
 ```
 
 - `GetAllReleases` walks every set in `Category:All sets`.
-- `GetNewReleases` walks the sets announced on the Yugipedia main page.
+- `GetNewReleases` walks the sets announced on the Yugipedia main page,
+  including sets that already exist and receive new TCG/Asia language
+  distributions. It saves and resumes its own checkpoint.
+- When a `new` crawl finishes complete, the scraped sets, prints and releases
+  are merged into the newest complete `all` snapshot in retrier persistence.
+  The merge is an upsert by identity: existing rows keep their IDs, new rows are
+  appended and rows absent from the scrape are preserved. A partial `new` crawl
+  does not update the snapshot.
+- Both modes store only complete sets and complete prints in the snapshot. A
+  print whose card page or gallery is still pending is kept in the resume state
+  and retried on the next execution.
 - `opts.Mediums` accepts `TCG`, `OCG` and `Rush Duel`. Rush Duel is opt-in and
   emits only official English editions; it stays disabled until an English
   release exists.
 - Both methods return sets and prints as a flat `[]domain.Item`.
-- All returned items are global (`StoreID == nil`); store-owned items belong to
-  the .NET service.
-- `GetAllReleases` can checkpoint and resume a long crawl.
+- All returned items are global (`StoreID == nil`); store-owned items are not
+  written by Catsync.
+- `GetAllReleases` can checkpoint and resume a long crawl. If no unfinished run
+  carries provider data, it falls back to the newest complete `all` snapshot.
 
 ## Flow
 
@@ -50,6 +61,23 @@ set pages
    v
 []domain.Item
 ```
+
+### Snapshot merge
+
+When a `new` crawl finishes complete, `updateCompleteAllSnapshot` loads the
+newest complete `all` checkpoint from retrier persistence and merges the
+scraped sets, prints and releases by `IdentityKey`. Existing IDs are preserved,
+new rows are appended and rows absent from the scrape remain. The merged
+checkpoint is saved back to the same `all` run, so the snapshot accumulates like
+a backup of everything inserted.
+
+### Completeness
+
+A print is complete when its set list row exists and, if the row links a card
+page, both that page and its gallery (when linked) were parsed. Complete sets
+and prints go into `sets`; pending prints go into `pending_prints` together with
+their card/gallery URL references. A snapshot with pending prints is never
+marked complete, is never merged into the `all` snapshot and is never upserted.
 
 ### Sets
 
@@ -140,37 +168,45 @@ images. Section IDs are not used because they can be duplicated.
 
 The provider returns a flat `[]domain.Item` (sets first, then prints). The
 `CatalogProviderUseCase` upserts everything through the PostgreSQL catalog
-repository in one operation. Rows are written in batches of 250, each batch
-commits independently and has its own timeout. A full catalog takes longer than
-a single database time window, so persistence runs until it finishes or the
-process is interrupted with Ctrl+C. Progress is logged every 10.000 rows.
-Persistence is idempotent; if it stops after writing some sets,
-running `go run ./cmd/sync -catprov ygo -mode all` reuses the provider snapshot
-stored in `data/retrier.json`, retries the pending pages and upserts the
-catalog again without re-scraping the completed pages.
+repository only after a complete crawl. Rows are written in batches of 250, each
+batch commits independently and has its own timeout. Progress is logged every
+10.000 rows. Persistence is idempotent; if it stops after writing some sets,
+running `go run ./cmd/sync -catprov ygo -mode all` reuses the provider snapshot,
+retries the pending pages and upserts the catalog again without re-scraping the
+completed pages.
 
 ## Checkpoints and reports
 
-`GetAllReleases` stores its parsed snapshot in `data/retrier.json` under the
-active run's `provider_data` field:
+`GetAllReleases` and `GetNewReleases` store their parsed snapshots in retrier
+persistence. The run document keeps the URL progress; the snapshot is a sidecar
+file per run (`data/retrier.json.d/<run-id>.json`) so periodic progress saves do
+not rewrite the catalog snapshot. A snapshot looks like:
 
 ```json
 {
-  "run_id": "...",
-  "provider": "ygo",
-  "mode": "all",
-  "states": {},
-  "provider_data": {
-    "releases": [],
-    "sets": [],
-    "pages": {}
-  }
+  "version": 2,
+  "complete": false,
+  "releases": [],
+  "sets": [
+    { "set": {}, "prints": [] }
+  ],
+  "pending_prints": [
+    { "set": 0, "print": {} }
+  ],
+  "prints_by_card": {
+    "https://yugipedia.com/wiki/Card": [0]
+  },
+  "gallery_refs": {
+    "https://yugipedia.com/wiki/Card_Gallery:Card": [0]
+  },
+  "pages": {}
 }
 ```
 
-The URL progress and the parsed snapshot therefore live in the same file. The
-crawl report is written to `data/ygo-crawl-report.json`; the `data/` folder is
-git-ignored.
+`sets` contains the sets whose page was parsed, with complete prints only.
+`pending_prints` and the card/gallery maps are resume data for prints whose
+pages are still pending. The crawl report is written to
+`data/ygo-crawl-report.json`; the `data/` folder is git-ignored.
 
 If the retrier document is lost, the snapshot can be rebuilt from the catalog
 already stored in PostgreSQL:

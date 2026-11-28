@@ -28,8 +28,7 @@ go run ./cmd/sync -catprov dragonshield -mode all
 
 ## Configuration
 
-The command loads `.env` from the repository root and, as a fallback, the
-parent `C:\Users\natan\Proyectos\Binderex\.env`.
+The command loads `.env` from the project directory.
 
 - `DB_URL` (or `CATSYNC_DB_URL`): PostgreSQL DSN.
 - When `DB_URL` is missing, the DSN is built from `POSTGRES_HOST`,
@@ -39,16 +38,20 @@ parent `C:\Users\natan\Proyectos\Binderex\.env`.
   Default: `10s`.
 - `DRAGONSHIELD_BROWSER`: optional browser executable.
 
-PostgreSQL is the parent compose container, exposed on port `5433`.
+PostgreSQL is available on port `5433`.
 
 ## State files
 
 - `data/retrier.json`: retrier run state in the current `domain.RetrierRun`
-  format (`version: 2`). It contains the URL progress and, in `provider_data`,
-  the parsed provider snapshot.
+  format (`version: 2`). It contains the URL progress.
+- `data/retrier.json.d/<run>.json`: sidecar with the parsed provider snapshot
+  for that run. Keeping it separate prevents periodic URL saves from rewriting
+  the full catalog snapshot.
 - `data/ygo-crawl-report.json`: summary of the last YGO crawl.
 
-`-resume=true` reuses the latest unfinished run and its provider snapshot.
+Both `new` and `all` save their snapshots. A snapshot contains only complete
+sets and complete card prints; pending prints are kept as resume data. The run
+is left `interrupted` when pages are pending so the next execution continues it.
 `-resume=false` starts a new run. The `data/` folder is git-ignored.
 
 ## Validation

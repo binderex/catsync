@@ -62,6 +62,7 @@ type fakePersistence struct {
 	run   domain.RetrierRun
 	found bool
 	err   error
+	saves []domain.RetrierRun
 }
 
 func (p *fakePersistence) RunStarted(context.Context, domain.RetrierRun) (domain.RetrierRunID, error) {
@@ -76,7 +77,15 @@ func (p *fakePersistence) RunFinished(context.Context, domain.RetrierRun) error 
 	return nil
 }
 
-func (p *fakePersistence) Save(context.Context, domain.RetrierRun) error {
+func (p *fakePersistence) Save(_ context.Context, run domain.RetrierRun) error {
+	if p.err != nil {
+		return p.err
+	}
+	if run.ProviderData == nil {
+		run.ProviderData = p.run.ProviderData
+	}
+	p.run = run
+	p.saves = append(p.saves, run)
 	return nil
 }
 
@@ -89,15 +98,30 @@ func (p *fakePersistence) LoadLatest(context.Context, string, string) (domain.Re
 }
 
 func (p *fakePersistence) List(context.Context, domain.RetrierRunFilter) ([]domain.RetrierRunSummary, error) {
-	return nil, p.err
+	if p.err != nil {
+		return nil, p.err
+	}
+	if p.run.ID == "" {
+		return nil, nil
+	}
+	return []domain.RetrierRunSummary{{
+		ID:       p.run.ID,
+		Provider: p.run.Provider,
+		Mode:     p.run.Mode,
+		State:    p.run.State,
+	}}, nil
 }
 
 func (p *fakePersistence) Delete(context.Context, domain.RetrierRunID) error {
 	return p.err
 }
 
-func (p *fakePersistence) SaveProviderData(context.Context, string, string, json.RawMessage) error {
-	return p.err
+func (p *fakePersistence) SaveProviderData(_ context.Context, _, _ string, data json.RawMessage) error {
+	if p.err != nil {
+		return p.err
+	}
+	p.run.ProviderData = data
+	return nil
 }
 
 var _ ports.RetrierPersistence = (*fakePersistence)(nil)
@@ -155,6 +179,89 @@ func TestCatalogProviderUseCasePropagatesErrors(t *testing.T) {
 	}
 	if len(repo.upserts) != 0 {
 		t.Fatal("repository must not be called when the provider fails")
+	}
+}
+
+func TestCatalogProviderUseCaseSkipsPartialNewUpsert(t *testing.T) {
+	provider := &fakeCatalogProvider{
+		newItems: []domain.Item{{
+			Kind:   domain.KindSleeve,
+			Brand:  domain.BrandDS,
+			Lang:   domain.LangEN,
+			Code:   "SKU-1",
+			Source: "https://example.com/sleeve",
+		}},
+		newErr: context.Canceled,
+	}
+	repo := &countingCatalogRepository{}
+	uc := NewCatalogProviderUseCase(provider, NewCatalogUseCase(repo), nil)
+
+	_, err := uc.GetNewReleases(context.Background(), domain.ProviderOptions{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if len(repo.upserts) != 0 {
+		t.Fatalf("partial new items were upserted: %d", len(repo.upserts))
+	}
+}
+
+func TestCatalogProviderUseCaseMarksIncompleteRunResumable(t *testing.T) {
+	provider := &fakeCatalogProvider{
+		newItems: []domain.Item{{
+			Kind:   domain.KindSet,
+			Source: "https://example.com/set",
+		}},
+		newErr: domain.ErrCrawlIncomplete,
+	}
+	repo := &countingCatalogRepository{}
+	persistence := &fakePersistence{
+		found: true,
+		run: domain.RetrierRun{
+			Version:      2,
+			ID:           "run-1",
+			Provider:     "fake",
+			Mode:         "new",
+			State:        domain.RetrierRunSuccess,
+			ProviderData: json.RawMessage(`{"complete":false}`),
+		},
+	}
+	uc := NewCatalogProviderUseCase(provider, NewCatalogUseCase(repo), persistence)
+
+	_, err := uc.GetNewReleases(context.Background(), domain.ProviderOptions{Resume: true})
+	if !errors.Is(err, domain.ErrCrawlIncomplete) {
+		t.Fatalf("error = %v, want ErrCrawlIncomplete", err)
+	}
+	if len(repo.upserts) != 0 {
+		t.Fatalf("incomplete items were upserted: %d", len(repo.upserts))
+	}
+	if persistence.run.State != domain.RetrierRunInterrupted {
+		t.Fatalf("run state = %q, want interrupted", persistence.run.State)
+	}
+	if string(persistence.run.ProviderData) != `{"complete":false}` {
+		t.Fatalf("provider data = %s", persistence.run.ProviderData)
+	}
+}
+
+func TestCatalogProviderUseCaseSkipsPartialAllUpsert(t *testing.T) {
+	provider := &fakeCatalogProvider{
+		allItems: []domain.Item{{
+			Kind:   domain.KindSleeve,
+			Brand:  domain.BrandDS,
+			Lang:   domain.LangEN,
+			Code:   "SKU-1",
+			Source: "https://example.com/sleeve",
+		}},
+		allErr: context.Canceled,
+	}
+	repo := &countingCatalogRepository{}
+	uc := NewCatalogProviderUseCase(provider, NewCatalogUseCase(repo), nil)
+
+	_, err := uc.GetAllReleases(context.Background(), domain.ProviderOptions{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if len(repo.upserts) != 0 {
+		t.Fatalf("partial all items were upserted: %d", len(repo.upserts))
 	}
 }
 

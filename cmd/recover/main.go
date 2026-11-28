@@ -28,7 +28,6 @@ func run() error {
 	flag.StringVar(&output, "output", "", "retrier JSON file (default data/retrier.json)")
 	flag.Parse()
 
-	_ = godotenv.Load(filepath.Join("..", ".env"))
 	_ = godotenv.Load()
 
 	dsn := strings.TrimSpace(os.Getenv("DB_URL"))

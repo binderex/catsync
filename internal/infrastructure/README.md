@@ -7,7 +7,7 @@ catprov/
   dragonshield/   Dragon Shield sleeve scraper
   ygo/            Yu-Gi-Oh! provider, checkpoint and scrapers
 persistence/
-  json/           single-file retrier store
+  json/           retrier document and provider-data sidecars
   sql/postgresql/catalog/  itemModel, catalog repository and migration
 ```
 

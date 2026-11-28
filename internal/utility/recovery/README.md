@@ -9,8 +9,9 @@ the catalog rows are still available.
 1. Loads every global `SET` and `CARD` from `items` (`store_id IS NULL`).
 2. Groups cards by `set_id`.
 3. Builds a complete `releasesCheckpoint` in the current format.
-4. Writes it as `provider_data` of an `interrupted` YGO `all` run in the
-   retrier JSON document.
+4. Writes it as the provider snapshot of an `interrupted` YGO `all` run. The
+   JSON store keeps the snapshot in the run sidecar under
+   `data/retrier.json.d/`.
 
 Cards whose set is missing are counted as orphans and are not included.
 Store-owned rows are excluded.

@@ -26,8 +26,11 @@ Orchestrates one provider:
 1. optionally loads the latest unfinished retrier run for provider + mode;
 2. injects it as `ProviderOptions.ResumeState`;
 3. calls `GetNewReleases` or `GetAllReleases`;
-4. upserts partial results even when the crawl is interrupted;
-5. returns the number of persisted rows.
+4. does not upsert partial crawls: progress stays in retrier persistence and
+   only a complete crawl writes to the catalog;
+5. when the provider reports `ErrCrawlIncomplete`, marks the run `interrupted`
+   so the next execution resumes it;
+6. returns the number of persisted rows.
 
 `-resume=false` skips the retrier lookup.
 

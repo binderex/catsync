@@ -26,7 +26,7 @@ previous data format.
 | Path | Responsibility |
 | --- | --- |
 | `cmd/sync` | Single synchronization entry point; `-catprov` selects Dragon Shield or Yu-Gi-Oh!. |
-| `cmd/recover` | Rebuilds the YGO snapshot from PostgreSQL when `data/retrier.json` is lost. |
+| `cmd/recover` | Rebuilds the YGO snapshot from PostgreSQL when retrier persistence is lost. |
 | `internal/utility/retrier` | Retrier utility (HTTP, Colly, Chromedp, progress, filters). No business rules. |
 | `internal/utility/recovery` | Rebuilds the YGO provider snapshot from PostgreSQL. |
 | `internal/domain` | Retrier and catalog domain types, identity and deduplication; no infrastructure imports. |
@@ -65,14 +65,31 @@ Rebuild the snapshot if the retrier document is lost:
 go run ./cmd/recover
 ```
 
-`-resume` defaults to `true`; `-resume=false` starts a new retrier run. The
-parsed provider snapshot is stored in `data/retrier.json` under
-`provider_data`. Every YGO crawl writes `data/ygo-crawl-report.json` with
-counts, set/print totals and the failed URLs.
+`-resume` defaults to `true`; `-resume=false` starts a new retrier run. Both
+`all` and `new` store their parsed provider snapshot in retrier persistence.
+`Sets` contains only complete sets and complete card prints; a card whose card
+page or gallery is still pending lives in `PendingPrints` and stays in the
+retrier queue for the next execution. Every YGO crawl writes
+`data/ygo-crawl-report.json` with counts, set/print totals and the failed URLs.
 
-The retrier state is a single JSON document at `data/retrier.json` inside the
-catsync project and can be changed with `-retrier-json` /
-`RETRIER_JSON_PATH`. PostgreSQL is the local container from the parent
+`-mode new` scrapes the releases announced on the Yugipedia main page. It saves
+and resumes its own checkpoint just like `all`. When the crawl completes, it
+merges the scraped sets, prints and releases into the newest complete `all`
+snapshot using upsert by identity; partial crawls do not update it. New releases
+discovered while resuming are added to the pending queue. `-mode all` falls back
+to the complete snapshot only when there is no unfinished run with provider
+data.
+
+A failed, canceled or incomplete crawl is never upserted, for either `new` or
+`all`. No database write happens on cancellation or during the crawl. Progress
+stays in retrier persistence, an incomplete run is marked `interrupted` so the
+next execution resumes it, and only a complete crawl writes to PostgreSQL.
+
+The retrier state is the `data/retrier.json` document inside the catsync
+project. Large provider snapshots are stored in sidecar files under
+`data/retrier.json.d/` so URL-progress saves never rewrite the full catalog
+snapshot. The path can be changed with `-retrier-json` / `RETRIER_JSON_PATH`.
+PostgreSQL is the local container from the parent
 `C:\Users\natan\Proyectos\Binderex\compose.yaml` on port `5433`.
 `DB_URL` must be set in the environment or in `.env`.
 
@@ -143,7 +160,7 @@ go test ./internal/infrastructure/catprov/ygo -run TestFetchMediawikiAllSetsLive
 - `CatalogUseCase.Upsert` fills IDs/defaults and calls
   `domain.DeduplicateItems` before the repository; the repository expects
   unique, normalized items. It rejects items with `StoreID` set, because
-  store-owned rows are written by the .NET service.
+  Catsync only writes global rows.
 - Items named `unknown` are placeholders: the use case drops them and the
   migration deletes existing global rows.
 - Only regular `CARD` rows whose `card_types` contains `Monster`, `Spell` or

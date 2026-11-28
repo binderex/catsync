@@ -180,6 +180,36 @@ func TestScrapeGallerySections(t *testing.T) {
 	}
 }
 
+const officialProxyGalleryFixture = `
+<html><body>
+<div class="card-gallery" id="card-gallery--EN">
+  <h2>Worldwide English</h2>
+  <ul class="gallery">
+    <li class="gallerybox">
+      <div class="thumb"><img src="https://img.yugipedia.com/thumb/a/b/normal-en.png/300px-normal-en.png"></div>
+      <div class="gallerytext"><p><a href="/wiki/LOB-EN001">LOB-EN001</a> <a href="/wiki/Ultra_Rare" title="Ultra Rare">UR</a> <a href="/wiki/1st_Edition" title="1st Edition">1st Edition</a></p></div>
+    </li>
+    <li class="gallerybox">
+      <div class="thumb"><img src="https://img.yugipedia.com/thumb/a/b/proxy-en.png/300px-proxy-en.png"></div>
+      <div class="gallerytext"><p><a href="/wiki/LOB-EN002">LOB-EN002</a> <a href="/wiki/Ultra_Rare" title="Ultra Rare">UR</a></p><span>oFfIcIaL pRoXy</span></div>
+    </li>
+  </ul>
+</div>
+</body></html>`
+
+func TestScrapeGallerySkipsOfficialProxy(t *testing.T) {
+	sections := scrapeGallery([]byte(officialProxyGalleryFixture))
+	if len(sections) != 1 {
+		t.Fatalf("sections = %d, want 1", len(sections))
+	}
+	if len(sections[0].Prints) != 1 {
+		t.Fatalf("prints = %d, want 1 (the proxy must be skipped)", len(sections[0].Prints))
+	}
+	if sections[0].Prints[0].Code != "LOB-EN001" {
+		t.Errorf("print code = %q, want LOB-EN001", sections[0].Prints[0].Code)
+	}
+}
+
 func galleryTestPrint(code string, lang domain.Lang, brand domain.Brand, rarity string) domain.Item {
 	print := domain.Item{
 		Kind:        domain.KindCard,

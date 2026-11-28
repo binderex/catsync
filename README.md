@@ -37,8 +37,8 @@ internal/utility/retrier (HTTP/Colly/Chromedp queue)
 - **`internal/application`**: ports (interfaces) and use cases. It orchestrates
   providers, catalog upserts and retrier persistence.
 - **`internal/infrastructure`**: Dragon Shield and Yu-Gi-Oh! providers, the
-  PostgreSQL `itemModel` and catalog adapter, and the single-file JSON retrier
-  store.
+  PostgreSQL `itemModel` and catalog adapter, and the JSON retrier store
+  (document plus provider-data sidecars).
 - **`internal/utility/retrier`**: a small URL queue with retries and transports.
   It has no business rules.
 
@@ -52,7 +52,7 @@ and UUID columns.
 
 - `NULL` → global catalog item (the only rows Catsync writes);
 - non-null → store-owned item (for example custom sleeves, deckboxes or used
-  playmats created by another service).
+  playmats). Catsync does not write these rows.
 
 The unique identity is:
 
@@ -93,17 +93,19 @@ Current catalog rules (global rows):
 
 ## Storage
 
-PostgreSQL is the container from the parent
-`C:\Users\natan\Proyectos\Binderex\compose.yaml`, exposed on port `5433`:
+PostgreSQL runs locally on port `5433`. The project `.env` contains:
 
 ```text
-postgres://binderex:binderex@localhost:5433/binderex?sslmode=disable
+DB_URL=postgres://binderex:binderex@localhost:5433/binderex?sslmode=disable
 ```
 
-The retrier state is one JSON document at `data/retrier.json` (`version: 2`).
-It holds the URL progress and, in `provider_data`, the parsed provider snapshot
-(for example the YGO sets and prints). The crawl report is
-`data/ygo-crawl-report.json`. Both live under the git-ignored `data/` folder.
+The retrier state is the `data/retrier.json` document (`version: 2`). It holds
+the URL progress; the large parsed provider snapshots (for example the YGO sets
+and prints) live in sidecar files under `data/retrier.json.d/`, one per run, so
+progress saves never rewrite the full catalog snapshot. Only complete sets and
+complete card prints are part of a scraped snapshot; pending prints stay in the
+resume state. The crawl report is `data/ygo-crawl-report.json`. Everything lives
+under the git-ignored `data/` folder.
 
 ## Commands
 
@@ -115,6 +117,14 @@ go run ./cmd/sync -catprov dragonshield -mode all
 
 `-resume` defaults to `true`; use `-resume=false` for a fresh crawl.
 
+`-mode new` scrapes the releases announced on the Yugipedia main page. It saves
+and resumes its own checkpoint. When the crawl completes, it also merges the
+scraped sets, prints and releases into the newest complete `all` snapshot by
+identity. `-mode all` remains the full crawl and reuses that complete snapshot
+when there is no unfinished run. A canceled or incomplete crawl is never
+upserted; its complete sets and prints, plus the pending card/gallery URLs,
+stay in retrier persistence for the next execution.
+
 ## Configuration
 
 - `DB_URL` or `CATSYNC_DB_URL`: PostgreSQL DSN.
@@ -122,8 +132,7 @@ go run ./cmd/sync -catprov dragonshield -mode all
 - `RETRIER_SAVE_INTERVAL`: intermediate save interval. Default: `10s`.
 - `DRAGONSHIELD_BROWSER`: optional Dragon Shield browser executable.
 
-The command loads `.env` from the repository root and, as a fallback, the
-parent `C:\Users\natan\Proyectos\Binderex\.env`.
+The command loads `.env` from the project directory.
 
 ## Development
 

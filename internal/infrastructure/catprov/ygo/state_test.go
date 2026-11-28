@@ -192,8 +192,23 @@ func TestReleasesCheckpointRoundTrip(t *testing.T) {
 	if !restored.pages["https://yugipedia.com/wiki/Test_Set"].Completed {
 		t.Error("retrier state was not restored")
 	}
+	if !restored.pending[restored.states[0].Prints[0]] {
+		t.Error("pending print was not marked for resume")
+	}
 
+	// The pending print is not part of the scraped snapshot.
 	items := restored.items()
+	if len(items) != 1 || items[0].Kind != domain.KindSet {
+		t.Fatalf("materialized items = %+v", items)
+	}
+
+	restored.reconcileCachedResultsLocked()
+	if len(restored.pending) != 0 || len(restored.printsByCard) != 0 || len(restored.galleryRefs) != 0 {
+		t.Fatalf("cached results did not complete the print: pending=%d card=%d gallery=%d",
+			len(restored.pending), len(restored.printsByCard), len(restored.galleryRefs))
+	}
+
+	items = restored.items()
 	if len(items) != 2 {
 		t.Fatalf("materialized items = %d", len(items))
 	}
